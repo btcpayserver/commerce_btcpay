@@ -2,6 +2,12 @@
 
 This module provides a [Drupal Commerce 2.x](https://www.drupal.org/project/commerce) payment plugin for [BTCPay Server](https://github.com/btcpayserver/btcpayserver). This allows you to accept cryptocurrencies without a 3rd party intermediary by becoming your own payment processor.
 
+Visit the [project page on Drupal.org](https://drupal.org/project/commerce_btcpay)
+
+## Status
+**This module is currently in Alpha stage and should not be used in production!** 
+Releases will be made available through the project page on drupal.org https://drupal.org/project/commerce_btcpay
+
 ## About BTCpay Server
 Short exceerpt from [their project page](https://github.com/btcpayserver/btcpayserver):
 >BTCPay Server is an Open Source payment processor, written in C#, that conforms to the invoice API of Bitpay. This allows easy migration of your code base to your own, self-hosted payment processor.
