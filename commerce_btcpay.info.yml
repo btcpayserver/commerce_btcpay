@@ -1,0 +1,7 @@
+name: Commerce BTCPay (cryptocurrency payments)
+type: module
+description: 'Provides payment gateway for use of BTCPay server which also includes Lightning Network payments. BTCPay server prodvides a BitPay compatible API which means this module also supports BitPay.'
+package: Commerce
+core: 8.x
+dependencies:
+  - commerce:commerce_payment

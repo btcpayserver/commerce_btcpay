@@ -1,0 +1,27 @@
+commerce_payment.commerce_payment_gateway.plugin.btcpay:
+  type: commerce_payment_gateway_configuration
+  mapping:
+    private_key_password_livenet:
+      type: string
+      label: "Livenet private key password"
+    private_key_password_testnet:
+      type: string
+      label: "Testnet private key password"
+    pairing_code_livenet:
+      type: string
+      label: "Livenet pairing code"
+    pairing_code_testnet:
+      type: string
+      label: "Testnet pairing code"
+    token_livenet:
+      type: string
+      label: "Livenet access token"
+    token_testnet:
+      type: string
+      label: "Testnet access token"
+    server_livenet:
+      type: string
+      label: "Livenet server URL"
+    server_testnet:
+      type: string
+      label: "Testnet server URL"
