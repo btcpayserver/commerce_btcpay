@@ -11,12 +11,19 @@ use Bitpay\Client\Client;
 use Bitpay\Network\Customnet;
 use Bitpay\Storage\EncryptedFilesystemStorage;
 use Bitpay\Token;
+use Drupal\commerce\Response\NeedsRedirectException;
+use Drupal\commerce_checkout\CheckoutOrderManagerInterface;
+use Drupal\commerce_payment\PaymentMethodTypeManager;
+use Drupal\commerce_payment\PaymentTypeManager;
+use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Component\Utility\Crypt;
 use Drupal\commerce_order\Entity\OrderInterface;
-use Drupal\commerce_payment\Entity\PaymentInterface;
 use Drupal\commerce_payment\Exception\PaymentGatewayException;
 use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\OffsitePaymentGatewayBase;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormStateInterface;
+use Psr\Log\LoggerInterface;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
@@ -34,6 +41,47 @@ use Symfony\Component\HttpFoundation\Request;
 class BtcPay extends OffsitePaymentGatewayBase {
 
   /**
+   * The logger.
+   *
+   * @var \Psr\Log\LoggerInterface
+   */
+  protected $logger;
+
+  /**
+   * The checkout order manager.
+   *
+   * @var \Drupal\commerce_checkout\CheckoutOrderManagerInterface
+   */
+  protected $checkoutOrderManager;
+
+  /**
+   * {@inheritdoc}
+   */
+  public function __construct(array $configuration, $plugin_id, $plugin_definition, EntityTypeManagerInterface $entity_type_manager, PaymentTypeManager $payment_type_manager, PaymentMethodTypeManager $payment_method_type_manager, TimeInterface $time, LoggerInterface $logger, CheckoutOrderManagerInterface $checkout_order_manager) {
+    parent::__construct($configuration, $plugin_id, $plugin_definition, $entity_type_manager, $payment_type_manager, $payment_method_type_manager, $time);
+
+    $this->logger = $logger;
+    $this->checkoutOrderManager = $checkout_order_manager;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition) {
+    return new static(
+      $configuration,
+      $plugin_id,
+      $plugin_definition,
+      $container->get('entity_type.manager'),
+      $container->get('plugin.manager.commerce_payment_type'),
+      $container->get('plugin.manager.commerce_payment_method_type'),
+      $container->get('datetime.time'),
+      $container->get('commerce_btcpay.logger'),
+      $container->get('commerce_checkout.checkout_order_manager')
+    );
+  }
+
+  /**
    * {@inheritdoc}
    */
   public function defaultConfiguration() {
@@ -45,6 +93,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
         'pairing_code_testnet' => '',
         'server_testnet' => '',
         'token_testnet' => '',
+        'minimum_payment_state' => 'confirmed',
+        'debug_log' => NULL,
       ] + parent::defaultConfiguration();
   }
 
@@ -118,6 +168,23 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ]
       ]
     ];
+    $form['minimum_payment_state'] = [
+      '#type' => 'select',
+      '#title' => $this->t('Minimum remote payment state'),
+      '#description' => $this->t('Choose after which BTCPay payment state you accept a payment as fully paid ("paid": 0-confirmations (only for small sums, danger of double spends), "confirmed": at least 1 confirmation, "complete" at least 6 confirmations. Note: Lightning Network payments are always assumed "complete" as they settle immediately.'),
+      '#default_value' => $this->configuration['minimum_payment_state'],
+      '#options' => [
+        'paid' => $this->t('Paid'),
+        'confirmed' => $this->t('Confirmed'),
+        'complete' => $this->t('Complete')
+      ],
+    ];
+    $form['debug_log'] = array(
+      '#type' => 'checkbox',
+      '#title' => $this->t('Enable verbose logging for debugging.'),
+      '#return_value' => '1',
+      '#default_value' => $this->configuration['debug_log'],
+    );
 
     return $form;
   }
@@ -137,6 +204,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $this->configuration['pairing_code_livenet'] = $values['pairing_code_livenet'];
       $this->configuration['server_testnet'] = $values['server_testnet'];
       $this->configuration['pairing_code_testnet'] = $values['pairing_code_testnet'];
+      $this->configuration['minimum_payment_state'] = $values['minimum_payment_state'];
+      $this->configuration['debug_log'] = $values['debug_log'];
       $this->configuration['mode'] = $values['mode'];
     }
   }
@@ -154,6 +223,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $this->configuration['pairing_code_livenet'] = '';
       $this->configuration['server_testnet'] = $values['server_testnet'];
       $this->configuration['pairing_code_testnet'] = '';
+      $this->configuration['minimum_payment_state'] = $values['minimum_payment_state'];
+      $this->configuration['debug_log'] = $values['debug_log'];
 
       // Create keys and tokens on BTCPay Server.
       $networks = ['livenet' => 'pairing_code_livenet', 'testnet' => 'pairing_code_testnet'];
@@ -169,8 +240,6 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   public function onReturn(OrderInterface $order, Request $request) {
-    \Drupal::logger('commerce_btcpay')->warning(print_r($request->getContent(), TRUE));
-
     // Get BTCPay payment data from order.
     $order_btcpay_data = $order->getData('btcpay');
     if (empty($order_btcpay_data['invoice_id'])) {
@@ -179,9 +248,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
 
     // As original BitPay API has no tokens to verfiy the counterparty server, we
     // need to query the invoice state to ensure it is payed.
-    if ($this->checkInvoicePaidFull($order_btcpay_data['invoice_id']) === FALSE) {
+    if ( ! $invoice = $this->getInvoice($order_btcpay_data['invoice_id'])) {
       // TODO: check to silently fail, display message and redirect back to cart.
-      throw new PaymentGatewayException('Invoice has not been fully paid.');
+      throw new PaymentGatewayException('Invoice not found.');
     }
 
     // If the user is anonymous and they provided the email during payment, add it to the order.
@@ -190,170 +259,140 @@ class BtcPay extends OffsitePaymentGatewayBase {
     }
     $order->save();
 
-    // Init payment storage.
-    $payment_storage = $this->entityTypeManager->getStorage('commerce_payment');
-
-    // Check if the IPN callback (onNotify) already created a payment entry.
-    if (!empty($payments = $payment_storage->loadByProperties(['order_id' => $order->id()]))) { // change to invoice id?
-      $payment = array_pop($payments);
-      $payment->setState('completed');
-      $payment->setRemoteState($request->query->get('status'));
-      $payment->save();
-
-    } else {
-      // As no payment for that order ID exists create a new one.
-      $payment = $payment_storage->create([
-        'state' => 'completed',
-        'amount' => $order->getTotalPrice(),
-        'payment_gateway' => $this->entityId,
-        'order_id' => $order->id(),
-        'remote_id' => $order_btcpay_data['invoice_id'],
-        'remote_state' => $order_btcpay_data['status'],
-      ]);
-      $payment->save();
-    }
+    $this->processPayment($invoice);
   }
 
   /**
    * {@inheritdoc}
    */
   public function onNotify(Request $request) {
-    \Drupal::logger('commerce_btcpay')->notice(print_r($request->getContent(), TRUE));
+    $this->logger->debug(print_r($request->getContent(), TRUE));
 
-    // Get BTCPay payment data from order.
-    $order_btcpay_data = $order->getData('btcpay');
-    if (empty($order_btcpay_data['invoice_id'])) {
-      throw new PaymentGatewayException('Invoice id missing for this BTCPay transaction.');
+    if (! $responseData = json_decode($request->getContent(), TRUE)) {
+      throw new PaymentGatewayException('Response data missing, aborting.');
     }
 
-    // As original BitPay API has no tokens to verfiy the counterparty server, we
+    if (empty($responseData['id'])) {
+      throw new PaymentGatewayException('Invoice id missing for this BTCPay transaction, aborting.');
+    }
+
+    // Load the invoice data from remote server to verify the payment.
+    /** @var \Bitpay\Invoice $invoice */
+    $invoice = $this->getInvoice($responseData['id']);
+    if (empty($invoice)) {
+      throw new PaymentGatewayException('Invoice not found on BTCPay server.');
+    }
+
+    // As original BitPay API has no tokens to verify the counterparty server, we
     // need to query the invoice state to ensure it is payed.
-    if ($this->checkInvoicePaidFull($order_btcpay_data['invoice_id']) === FALSE) {
-      // TODO: check to silently fail, display message and redirect back to cart.
-      throw new PaymentGatewayException('onNotifiy: Invoice has not been fully paid.');
+    /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
+    if (! $order = \Drupal\commerce_order\Entity\Order::load($invoice->getOrderId())) {
+      throw new PaymentGatewayException('Could not find matching order.');
     }
 
-    // Get bitpay payment data from order.
-    $order_btcpay_data = $order->getData('btcpay');
-    if (empty($order_btcpay_data['invoice_id'])) {
-      throw new PaymentGatewayException('Invoice id missing for this BTCPay transaction.');
-    }
+    // Set the order to completed state if there is an payment ongoing.
+    if ($payment = $this->processPayment($invoice)) {
+      /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
+      $checkout_flow = $order->get('checkout_flow')->entity;
+      $checkout_flow_plugin = $checkout_flow->getPlugin();
+      $checkout_flow_plugin->setOrder($order);
+      $step_id = $this->checkoutOrderManager->getCheckoutStepId($order);
+      $next_step_id = $checkout_flow_plugin->getNextStepId($step_id);
 
+      try {
+        $checkout_flow_plugin->redirectToStep($next_step_id);
+      }
+      catch (NeedsRedirectException $exception) {
+        // Do nothing to avoid redirection.
+      }
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function processPayment($invoice) {
     // Init payment storage.
     $payment_storage = $this->entityTypeManager->getStorage('commerce_payment');
 
+    // Load the order
+    /** @var OrderInterface $order */
+    if (! $order = \Drupal\commerce_order\Entity\Order::load($invoice->getOrderId())) {
+      throw new PaymentGatewayException('processPayment: Could not find matching order.');
+    }
+
+    // Only continue if the payment status of the invoice has valid payment state.
+    // TODO: handle invalidated payments + refunds
+    if ($this->checkInvoicePaidFull($invoice) === FALSE) {
+      // TODO: Log invoice state indicating problem with payment.
+      return NULL;
+    }
+
+    $paymentState = $this->mapRemotePaymentState($invoice->getStatus());
+
+    /** @var \Drupal\commerce_payment\Entity\PaymentInterface $payment */
     // Check if the IPN callback (onNotify) already created a payment entry.
-    if (!empty($payments = $payment_storage->loadByProperties(['order_id' => $order->id()]))) {
+    if (!empty($payments = $payment_storage->loadByProperties(['order_id' => $order->id(), 'remote_id' => $invoice->getId()]))) {
       $payment = array_pop($payments);
-      $payment->setState('completed');
-      $payment->setRemoteState($request->query->get('status'));
+      $payment->setState($paymentState);
+      $payment->setRemoteState($invoice->getStatus());
       $payment->save();
 
     } else {
       // As no payment for that order ID exists create a new one.
       $payment = $payment_storage->create([
-        'state' => 'completed',
+        'state' => $paymentState,
         'amount' => $order->getTotalPrice(),
         'payment_gateway' => $this->entityId,
         'order_id' => $order->id(),
-        'remote_id' => $order_btcpay_data['invoice_id'],
-        'remote_state' => $order_btcpay_data['status'],
+        'remote_id' => $invoice->getId(),
+        'remote_state' => $invoice->getStatus(),
       ]);
       $payment->save();
     }
+
+    return (! empty($payment)) ? $payment : NULL;
   }
+
 
   /**
    * {@inheritdoc}
    */
-  public function createPayment(PaymentInterface $payment, $capture = TRUE) {
-    // TODO: not sure if needed...
-    $this->assertPaymentState($payment, ['new']);
-    $payment_method = $payment->getPaymentMethod();
-    $this->assertPaymentMethod($payment_method);
+  protected function mapRemotePaymentState($remoteState) {
+    // Config option: dropdown payment full
+    // "0conf" is 0-conf payment (tx visible on blockchain)
+    // "1conf" at least 1 confirmation
+    // "6conf" at least 6 confirmations
 
-    // Add a built in test for testing decline exceptions.
-    /** @var \Drupal\address\Plugin\Field\FieldType\AddressItem $billing_address */
-    if ($billing_address = $payment_method->getBillingProfile()) {
-      $billing_address = $payment_method->getBillingProfile()->get('address')->first();
-      if ($billing_address->getPostalCode() == '53140') {
-        throw new HardDeclineException('The payment was declined');
-      }
+    // TODO: handle invalidated/refunded payments.
+
+    $mappedState = '';
+
+    switch ($this->configuration['minimum_payment_state']) {
+      case "paid":
+        if (in_array($remoteState, ["paid", "confirmed", "complete"])) {
+          $mappedState = "completed";
+        } else {
+          $mappedState = "authorization";
+        }
+        break;
+      case "confirmed":
+        if (in_array($remoteState, ["confirmed", "complete"])) {
+          $mappedState = "completed";
+        } else {
+          $mappedState = "authorization";
+        }
+        break;
+      case "complete":
+        if ($remoteState == "complete") {
+          $mappedState = "completed";
+        } else {
+          $mappedState = "authorization";
+        }
+        break;
     }
 
-    // Perform the create payment request here, throw an exception if it fails.
-    // See \Drupal\commerce_payment\Exception for the available exceptions.
-    // Remember to take into account $capture when performing the request.
-    $amount = $payment->getAmount();
-    $payment_method_token = $payment_method->getRemoteId();
-    // The remote ID returned by the request.
-    $remote_id = '123456';
-    $next_state = $capture ? 'completed' : 'authorization';
-
-    $payment->setState($next_state);
-    $payment->setRemoteId($remote_id);
-    $payment->save();
-  }
-
-  /**
-   * {@inheritdoc}
-   */
-  public function capturePayment(PaymentInterface $payment, Price $amount = NULL) {
-    // TODO: implement if needed
-    $this->assertPaymentState($payment, ['authorization']);
-    // If not specified, capture the entire amount.
-    $amount = $amount ?: $payment->getAmount();
-
-    // Perform the capture request here, throw an exception if it fails.
-    // See \Drupal\commerce_payment\Exception for the available exceptions.
-    $remote_id = $payment->getRemoteId();
-    $number = $amount->getNumber();
-
-    $payment->setState('completed');
-    $payment->setAmount($amount);
-    $payment->save();
-  }
-
-  /**
-   * {@inheritdoc}
-   */
-  public function voidPayment(PaymentInterface $payment) {
-    // TODO: implement if needed
-    $this->assertPaymentState($payment, ['authorization']);
-    // Perform the void request here, throw an exception if it fails.
-    // See \Drupal\commerce_payment\Exception for the available exceptions.
-    $remote_id = $payment->getRemoteId();
-
-    $payment->setState('authorization_voided');
-    $payment->save();
-  }
-
-  /**
-   * {@inheritdoc}
-   */
-  public function refundPayment(PaymentInterface $payment, Price $amount = NULL) {
-    // TODO: implement if needed
-    $this->assertPaymentState($payment, ['completed', 'partially_refunded']);
-    // If not specified, refund the entire amount.
-    $amount = $amount ?: $payment->getAmount();
-    $this->assertRefundAmount($payment, $amount);
-
-    // Perform the refund request here, throw an exception if it fails.
-    // See \Drupal\commerce_payment\Exception for the available exceptions.
-    $remote_id = $payment->getRemoteId();
-    $number = $amount->getNumber();
-
-    $old_refunded_amount = $payment->getRefundedAmount();
-    $new_refunded_amount = $old_refunded_amount->add($amount);
-    if ($new_refunded_amount->lessThan($payment->getAmount())) {
-      $payment->setState('partially_refunded');
-    }
-    else {
-      $payment->setState('refunded');
-    }
-
-    $payment->setRefundedAmount($new_refunded_amount);
-    $payment->save();
+    return $mappedState;
   }
 
   /**
@@ -371,7 +410,6 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   public function createInvoice(OrderInterface $order = NULL, $options = []) {
-
     $invoice = new \Bitpay\Invoice;
     $currency = new \Bitpay\Currency();
     $currency->setCode($order->getTotalPrice()->getCurrencyCode());
@@ -412,15 +450,16 @@ class BtcPay extends OffsitePaymentGatewayBase {
     // Set notification url.
     $invoice->setNotificationUrl($this->getNotifyUrl()->toString());
 
-    // Create BitPay client and send invoice data to payment backend.
-    //$bitpay = \Drupal::getContainer()->get('bitpay.service');
-    //$client = $bitpay->getClient();
-
     try {
       $client = $this->getBtcPayClient();
       return $client->createInvoice($invoice);
     } catch (\Exception $e) {
       // TODO: log
+      drupal_set_message(t(
+        'Error creating payment on remote server. Error: @error',
+        ['@error' => $e->getMessage()]
+      ),
+        'error');
       return NULL;
     }
   }
@@ -436,16 +475,10 @@ class BtcPay extends OffsitePaymentGatewayBase {
   /**
    * {@inheritdoc}
    */
-  public function checkInvoicePaidFull($invoiceId) {
-    $confirmedStates = ['complete', 'paid'];
+  public function checkInvoicePaidFull($invoice) {
+    $confirmedStates = ['paid', 'confirmed', 'complete'];
 
-    $client = $this->getBtcPayClient();
-    $invoice = $client->getInvoice($invoiceId);
-    if (in_array($invoice->getStatus(), $confirmedStates)) {
-      return TRUE;
-    }
-
-    return FALSE;
+    return in_array($invoice->getStatus(), $confirmedStates);
   }
 
   /**
@@ -542,6 +575,15 @@ class BtcPay extends OffsitePaymentGatewayBase {
 
     }
 
+  }
+
+  /**
+   * Check if verbose logging enabled.
+   *
+   * @return bool
+   */
+  protected function debugEnabled() {
+    return $this->configuration['debug_log'] == 1 ? TRUE : FALSE;
   }
 
 }

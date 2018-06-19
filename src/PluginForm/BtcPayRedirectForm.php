@@ -35,9 +35,12 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
       'cancel_url' => $form['#cancel_url'],
     ];
 
-    /** @var \Bitpay\Invoice $btcPayInvoice **/
-    $btcPayInvoice = $payment_gateway_plugin->createInvoice($order, $options);
-    // todo check if invoice not null.
+
+      /** @var \Bitpay\Invoice $btcPayInvoice **/
+      if (! $btcPayInvoice = $payment_gateway_plugin->createInvoice($order, $options)) {
+        $this->redirectToPreviousStep();
+      }
+
 
     // Store the remote invoice data on the order.
     $order->setData('btcpay', [
@@ -53,6 +56,16 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
     $data = [];
 
     return $this->buildRedirectForm($form, $form_state, $redirect_url, $data);
+  }
+
+  /**
+   * Redirects to a previous checkout step on error.
+   *
+   * @throws \Drupal\commerce\Response\NeedsRedirectException
+   */
+  protected function redirectToPreviousStep() {
+    $step_id = $this->checkoutFlow->getPane('payment_information')->getStepId();
+    return $this->checkoutFlow->redirectToStep($step_id);
   }
 
 }

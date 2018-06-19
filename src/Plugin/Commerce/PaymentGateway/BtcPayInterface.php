@@ -3,14 +3,12 @@
 namespace Drupal\commerce_btcpay\Plugin\Commerce\PaymentGateway;
 
 use Drupal\commerce_order\Entity\OrderInterface;
-use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\SupportsAuthorizationsInterface;
 use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\SupportsNotificationsInterface;
-use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\SupportsRefundsInterface;
 
 /**
  * Provides the interface for the BTCPay payment gateway.
  */
-interface BtcPayInterface extends SupportsAuthorizationsInterface, SupportsRefundsInterface, SupportsNotificationsInterface {
+interface BtcPayInterface extends SupportsNotificationsInterface {
 
   /**
    * Gets the server URL.
@@ -72,10 +70,36 @@ interface BtcPayInterface extends SupportsAuthorizationsInterface, SupportsRefun
   /**
    * Check BTCPay server invoice and check status.
    *
-   * @param string $invoiceId
+   * @param \Bitpay\InvoiceInterface $invoice
    *
    * @return boolean
    */
-  public function checkInvoicePaidFull($invoiceId);
+  public function checkInvoicePaidFull($invoice);
+
+  /**
+   * Update/create payment for order.
+   *
+   * Handles creation or update of existing payment entities.
+   *
+   * @param \Bitpay\InvoiceInterface $invoice
+   *   Remote BTCPay invoice.
+   *
+   * @return
+   */
+  public function processPayment($invoice);
+
+  /**
+   * Depending on the payment type settings decide the payment state.
+   *
+   * Depending on payment settings we handle 0-conf/confirmed/6-conf payments as "completed"
+   *
+   * TODO: think about how to handle overpayments (duplicate/multiple) payments? Create new payment or update old?
+   *
+   * @param string $remoteState
+   *   Remote BTCPay invoice state.
+   *
+   * @return void
+   */
+  public function mapRemotePaymentState($remoteState);
 
 }
