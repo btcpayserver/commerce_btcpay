@@ -5,11 +5,11 @@ This module provides a [Drupal Commerce 2.x](https://www.drupal.org/project/comm
 Visit the [project page on Drupal.org](https://drupal.org/project/commerce_btcpay)
 
 ## Status
-**This module is currently in Alpha stage and should not be used in production!** 
+**This module is currently in alpha stage and under active development!** 
 Releases will be made available through the project page on drupal.org https://drupal.org/project/commerce_btcpay
 
 ## About BTCpay Server
-Short exceerpt from [their project page](https://github.com/btcpayserver/btcpayserver):
+Short excerpt from [their project page](https://github.com/btcpayserver/btcpayserver):
 >BTCPay Server is an Open Source payment processor, written in C#, that conforms to the invoice API of Bitpay. This allows easy migration of your code base to your own, self-hosted payment processor.
 > 
 >This solution is for you if:

@@ -22,6 +22,7 @@ use Drupal\commerce_payment\Exception\PaymentGatewayException;
 use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\OffsitePaymentGatewayBase;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\State\StateInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
@@ -55,13 +56,21 @@ class BtcPay extends OffsitePaymentGatewayBase {
   protected $checkoutOrderManager;
 
   /**
+   * The state manager.
+   *
+   * @var \Drupal\Core\State\StateInterface
+   */
+  protected $state;
+
+  /**
    * {@inheritdoc}
    */
-  public function __construct(array $configuration, $plugin_id, $plugin_definition, EntityTypeManagerInterface $entity_type_manager, PaymentTypeManager $payment_type_manager, PaymentMethodTypeManager $payment_method_type_manager, TimeInterface $time, LoggerInterface $logger, CheckoutOrderManagerInterface $checkout_order_manager) {
+  public function __construct(array $configuration, $plugin_id, $plugin_definition, EntityTypeManagerInterface $entity_type_manager, PaymentTypeManager $payment_type_manager, PaymentMethodTypeManager $payment_method_type_manager, TimeInterface $time, LoggerInterface $logger, CheckoutOrderManagerInterface $checkout_order_manager, StateInterface $state) {
     parent::__construct($configuration, $plugin_id, $plugin_definition, $entity_type_manager, $payment_type_manager, $payment_method_type_manager, $time);
 
     $this->logger = $logger;
     $this->checkoutOrderManager = $checkout_order_manager;
+    $this->state = $state;
   }
 
   /**
@@ -77,7 +86,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $container->get('plugin.manager.commerce_payment_method_type'),
       $container->get('datetime.time'),
       $container->get('commerce_btcpay.logger'),
-      $container->get('commerce_checkout.checkout_order_manager')
+      $container->get('commerce_checkout.checkout_order_manager'),
+      $container->get('state')
     );
   }
 
@@ -216,7 +226,6 @@ class BtcPay extends OffsitePaymentGatewayBase {
   public function submitConfigurationForm(array &$form, FormStateInterface $form_state) {
     parent::submitConfigurationForm($form, $form_state);
 
-    // TODO: if you only change eg. hostname of server, tokens get overwritten in $this->configuration...
     if (!$form_state->getErrors()) {
       $values = $form_state->getValue($form['#parents']);
       $this->configuration['server_livenet'] = $values['server_livenet'];
@@ -226,7 +235,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $this->configuration['minimum_payment_state'] = $values['minimum_payment_state'];
       $this->configuration['debug_log'] = $values['debug_log'];
 
-      // Create keys and tokens on BTCPay Server.
+      // Create new keys and tokens on BTCPay Server if we have a pairing code.
       $networks = ['livenet' => 'pairing_code_livenet', 'testnet' => 'pairing_code_testnet'];
       foreach ($networks as $network => $setting) {
         if (!empty($values["$setting"])) {
@@ -266,7 +275,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   public function onNotify(Request $request) {
-    $this->logger->debug(print_r($request->getContent(), TRUE));
+    if ($this->debugEnabled()) {
+      $this->logger->debug(print_r($request->getContent(), TRUE));
+    }
 
     if (! $responseData = json_decode($request->getContent(), TRUE)) {
       throw new PaymentGatewayException('Response data missing, aborting.');
@@ -454,12 +465,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $client = $this->getBtcPayClient();
       return $client->createInvoice($invoice);
     } catch (\Exception $e) {
-      // TODO: log
-      drupal_set_message(t(
-        'Error creating payment on remote server. Error: @error',
-        ['@error' => $e->getMessage()]
-      ),
-        'error');
+      $this->logger->error(t('Error on creating invoice on remote server: @error', ['@error' => $e->getMessage()]));
       return NULL;
     }
   }
@@ -490,8 +496,6 @@ class BtcPay extends OffsitePaymentGatewayBase {
     // keys. Or other way around use it also for api invoice requests.
 
     global $base_url;
-    $this->configuration["token_$network"] = '';
-    $this->configuration["private_key_password_$network"] = '';
     $password = Crypt::randomBytesBase64();
     $bitpay = new Bitpay([
       'bitpay' => [
@@ -539,8 +543,11 @@ class BtcPay extends OffsitePaymentGatewayBase {
       ]), 'error');
       return;
     }
-    $this->configuration["token_$network"] = (string) $token;
-    $this->configuration["private_key_password_$network"] = $password;
+
+    // Set the non user visable data using drupal state api, as non visible config gets
+    // wiped in parent::submitConfigurationForm
+    $this->state->set("commerce_btcpay.token_$network", (string) $token);
+    $this->state->set("commerce_btcpay.private_key_password_$network", $password);
     drupal_set_message($this->t('New @network API token generated successfully. Encrypted keypair saved to the private filesystem.', ['@network' => $network]));
   }
 
@@ -552,7 +559,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $network = $this->getMode() . 'net';
 
     try {
-      $storageEngine = new EncryptedFilesystemStorage($this->configuration["private_key_password_$network"]);
+      $storageEngine = new EncryptedFilesystemStorage($this->state->get("commerce_btcpay.private_key_password_$network"));
       $privateKey = $storageEngine->load("private://btcpay_$network.key");
       $publicKey = $storageEngine->load("private://btcpay_$network.pub");
 
@@ -560,7 +567,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $remoteNetwork = new Customnet($this->getServerUrl(), 443); //inconsistent why have getServerUrl() not $this->configuration['']?
       $adapter = new CurlAdapter();
       $token = new Token();
-      $token->setToken($this->configuration["token_$network"]);
+      $token->setToken($this->state->get("commerce_btcpay.token_$network"));
 
       $client->setPrivateKey($privateKey);
       $client->setPublicKey($publicKey);
@@ -570,9 +577,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
 
       return $client;
     } catch (\Exception $e) {
-      // TODO: log
+      $this->logger->error(t('Error getting BitPay Client: @error', ['@error' => $e->getMessage()]));
       return NULL;
-
     }
 
   }
