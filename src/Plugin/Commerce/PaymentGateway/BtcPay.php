@@ -529,6 +529,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $sin->setPublicKey($publicKey);
     $sin->generate();
     $client = $bitpay->get('client');
+    // Use our custom network (btcpay) server.
+    $remoteNetwork = new Customnet($this->getServerUrl(), 443);
+    $client->setNetwork($remoteNetwork);
     try {
       $token = $client->createToken([
         'id' => (string) $sin,
