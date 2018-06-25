@@ -103,7 +103,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
         'pairing_code_testnet' => '',
         'server_testnet' => '',
         'token_testnet' => '',
-        'minimum_payment_state' => 'confirmed',
+        'confirmation_speed' => 'medium',
         'debug_log' => NULL,
       ] + parent::defaultConfiguration();
   }
@@ -178,15 +178,15 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ]
       ]
     ];
-    $form['minimum_payment_state'] = [
+    $form['confirmation_speed'] = [
       '#type' => 'select',
-      '#title' => $this->t('Minimum remote payment state'),
-      '#description' => $this->t('Choose after which BTCPay payment state you accept a payment as fully paid ("paid": 0-confirmations (only for small sums, danger of double spends), "confirmed": at least 1 confirmation, "complete" at least 6 confirmations. Note: Lightning Network payments are always assumed "complete" as they settle immediately.'),
-      '#default_value' => $this->configuration['minimum_payment_state'],
+      '#title' => $this->t('Confirmation speed'),
+      '#description' => $this->t('Choose after how many confirmations you accept a payment as fully paid ("high": 0-confirmations (only for small sums, danger of double spends), "medium" (default): at least 1 confirmation (~10 minutes), "low" at least 6 confirmations (~1 hour). Note: Lightning Network payments are always assumed to have >6 confirmations as they settle immediately.'),
+      '#default_value' => $this->configuration['confirmation_speed'],
       '#options' => [
-        'paid' => $this->t('Paid'),
-        'confirmed' => $this->t('Confirmed'),
-        'complete' => $this->t('Complete')
+        'high' => $this->t('High'),
+        'medium' => $this->t('Medium'),
+        'low' => $this->t('Low')
       ],
     ];
     $form['debug_log'] = array(
@@ -214,7 +214,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $this->configuration['pairing_code_livenet'] = $values['pairing_code_livenet'];
       $this->configuration['server_testnet'] = $values['server_testnet'];
       $this->configuration['pairing_code_testnet'] = $values['pairing_code_testnet'];
-      $this->configuration['minimum_payment_state'] = $values['minimum_payment_state'];
+      $this->configuration['confirmation_speed'] = $values['confirmation_speed'];
       $this->configuration['debug_log'] = $values['debug_log'];
       $this->configuration['mode'] = $values['mode'];
     }
@@ -232,7 +232,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $this->configuration['pairing_code_livenet'] = '';
       $this->configuration['server_testnet'] = $values['server_testnet'];
       $this->configuration['pairing_code_testnet'] = '';
-      $this->configuration['minimum_payment_state'] = $values['minimum_payment_state'];
+      $this->configuration['confirmation_speed'] = $values['confirmation_speed'];
       $this->configuration['debug_log'] = $values['debug_log'];
 
       // Create new keys and tokens on BTCPay Server if we have a pairing code.
@@ -370,40 +370,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   protected function mapRemotePaymentState($remoteState) {
-    // Config option: dropdown payment full
-    // "0conf" is 0-conf payment (tx visible on blockchain)
-    // "1conf" at least 1 confirmation
-    // "6conf" at least 6 confirmations
-
-    // TODO: handle invalidated/refunded payments.
-
-    $mappedState = '';
-
-    switch ($this->configuration['minimum_payment_state']) {
-      case "paid":
-        if (in_array($remoteState, ["paid", "confirmed", "complete"])) {
-          $mappedState = "completed";
-        } else {
-          $mappedState = "authorization";
-        }
-        break;
-      case "confirmed":
-        if (in_array($remoteState, ["confirmed", "complete"])) {
-          $mappedState = "completed";
-        } else {
-          $mappedState = "authorization";
-        }
-        break;
-      case "complete":
-        if ($remoteState == "complete") {
-          $mappedState = "completed";
-        } else {
-          $mappedState = "authorization";
-        }
-        break;
-    }
-
-    return $mappedState;
+    // TODO: currently does not handle invalidated/refunded payments.
+    return (in_array($remoteState, ["confirmed", "complete"])) ? 'completed' : 'authorization';
   }
 
   /**
@@ -429,6 +397,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $invoice->setPaymentTotals($order->getTotalPrice()->getNumber());
     $invoice->setOrderId($order->id());
     $invoice->setPosData($order->id());
+    $invoice->setTransactionSpeed($this->configuration['confirmation_speed']);
 
     // As bitpay API currently supports only one item we set it to the store name.
     $item = new \Bitpay\Item();

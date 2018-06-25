@@ -89,11 +89,10 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
   public function processPayment($invoice);
 
   /**
-   * Depending on the payment type settings decide the payment state.
-   *
-   * Depending on payment settings we handle 0-conf/confirmed/6-conf payments as "completed"
+   * Map the remote payment state to some available Commerce payment state.
    *
    * TODO: think about how to handle overpayments (duplicate/multiple) payments? Create new payment or update old?
+   * TODO: maybe add remote payment states to Commerce payment states?
    *
    * @param string $remoteState
    *   Remote BTCPay invoice state.
