@@ -269,6 +269,12 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $order->save();
 
     $this->processPayment($invoice);
+
+    if ($this->checkInvoicePaymentFailed($invoice) === TRUE) {
+      // If the payment failed (voided/expired) for some reason we need to handle
+      // that one here. As BitPay/BTCPay API does not support a cancel url.
+      $this->redirectOnPaymentError($order, TRUE);
+    }
   }
 
   /**
@@ -287,29 +293,38 @@ class BtcPay extends OffsitePaymentGatewayBase {
       throw new PaymentGatewayException('Invoice id missing for this BTCPay transaction, aborting.');
     }
 
-    // Load the invoice data from remote server to verify the payment.
+    // As original BitPay API has no tokens to verify the counterparty server, we
+    // need to query the invoice state to ensure it is payed.
     /** @var \Bitpay\Invoice $invoice */
     $invoice = $this->getInvoice($responseData['id']);
     if (empty($invoice)) {
       throw new PaymentGatewayException('Invoice not found on BTCPay server.');
     }
 
-    // As original BitPay API has no tokens to verify the counterparty server, we
-    // need to query the invoice state to ensure it is payed.
     /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
     if (! $order = \Drupal\commerce_order\Entity\Order::load($invoice->getOrderId())) {
       throw new PaymentGatewayException('Could not find matching order.');
     }
 
-    // Set the order to completed state if there is an payment ongoing.
-    if ($payment = $this->processPayment($invoice)) {
-      /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
-      $checkout_flow = $order->get('checkout_flow')->entity;
-      $checkout_flow_plugin = $checkout_flow->getPlugin();
+    // for bc, check if method exists until issue resolved or other way found:
+    // see https://www.drupal.org/project/commerce/issues/2931044
+    /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
+    $checkout_flow = $order->get('checkout_flow')->entity;
+    $checkout_flow_plugin = $checkout_flow->getPlugin();
+    if ( ! method_exists($checkout_flow_plugin, 'setOrder')) {
+      return;
+    }
+
+    // Set the order to completed state if there is an payment ongoing so that
+    // the order is not in state "draft" and visible for the user in order history.
+    // First process the payment, if successful redirect and set order completed
+    // via redirect.
+    if ($payment = $this->processPayment($invoice) && $this->checkInvoicePaidFull($invoice)) {
       $checkout_flow_plugin->setOrder($order);
       $step_id = $this->checkoutOrderManager->getCheckoutStepId($order);
       $next_step_id = $checkout_flow_plugin->getNextStepId($step_id);
 
+      // This is some kind of workaround, see https://www.drupal.org/project/commerce/issues/2931044
       try {
         $checkout_flow_plugin->redirectToStep($next_step_id);
       }
@@ -317,40 +332,36 @@ class BtcPay extends OffsitePaymentGatewayBase {
         // Do nothing to avoid redirection.
       }
     }
+
+    if ($this->checkInvoicePaymentFailed($invoice) === TRUE) {
+      // If the payment failed (voided/expired) for some reason we need to handle
+      // that one here. As BitPay/BTCPay API does not support a cancel url.
+      $this->redirectOnPaymentError($order, FALSE);
+    }
   }
 
   /**
    * {@inheritdoc}
    */
   protected function processPayment($invoice) {
-    // Init payment storage.
-    $payment_storage = $this->entityTypeManager->getStorage('commerce_payment');
-
-    // Load the order
+    // Load the order.
     /** @var OrderInterface $order */
     if (! $order = \Drupal\commerce_order\Entity\Order::load($invoice->getOrderId())) {
       throw new PaymentGatewayException('processPayment: Could not find matching order.');
-    }
-
-    // Only continue if the payment status of the invoice has valid payment state.
-    // TODO: handle invalidated payments + refunds
-    if ($this->checkInvoicePaidFull($invoice) === FALSE) {
-      // TODO: Log invoice state indicating problem with payment.
-      return NULL;
     }
 
     $paymentState = $this->mapRemotePaymentState($invoice->getStatus());
 
     /** @var \Drupal\commerce_payment\Entity\PaymentInterface $payment */
     // Check if the IPN callback (onNotify) already created a payment entry.
-    if (!empty($payments = $payment_storage->loadByProperties(['order_id' => $order->id(), 'remote_id' => $invoice->getId()]))) {
-      $payment = array_pop($payments);
+    if (!empty($payment = $this->loadExistingPayment($order, $invoice))) {
       $payment->setState($paymentState);
       $payment->setRemoteState($invoice->getStatus());
       $payment->save();
 
     } else {
       // As no payment for that order ID exists create a new one.
+      $payment_storage = $this->entityTypeManager->getStorage('commerce_payment');
       $payment = $payment_storage->create([
         'state' => $paymentState,
         'amount' => $order->getTotalPrice(),
@@ -370,14 +381,32 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   protected function mapRemotePaymentState($remoteState) {
-    // TODO: currently does not handle invalidated/refunded payments.
-    return (in_array($remoteState, ["confirmed", "complete"])) ? 'completed' : 'authorization';
+    // TODO: currently does not handle refunded payments.
+    // TODO: custom payment workflows suited for BTCPay.
+    $mappedState = '';
+    switch ($remoteState) {
+      case "paid":
+        $mappedState = "authorization";
+        break;
+      case "confirmed":
+      case "complete":
+        $mappedState = "completed";
+        break;
+      case "expired":
+        $mappedState = "authorization_expired";
+        break;
+      case "invalid":
+        $mappedState = "authorization_voided";
+        break;
+    }
+
+    return $mappedState;
   }
 
   /**
    * {@inheritdoc}
    */
-  public function getServerUrl() {
+  protected function getServerUrl() {
     if ($this->getMode() === 'live') {
       return $this->configuration['server_livenet'];
     } else {
@@ -450,7 +479,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
   /**
    * {@inheritdoc}
    */
-  public function checkInvoicePaidFull($invoice) {
+  protected function checkInvoicePaidFull($invoice) {
     $confirmedStates = ['paid', 'confirmed', 'complete'];
 
     return in_array($invoice->getStatus(), $confirmedStates);
@@ -459,7 +488,55 @@ class BtcPay extends OffsitePaymentGatewayBase {
   /**
    * {@inheritdoc}
    */
-  public function createToken($network, $pairing_code) {
+  protected function checkInvoicePaymentFailed($invoice) {
+    $errorStates = ['expired', 'invalid'];
+
+    return in_array($invoice->getStatus(), $errorStates);
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function loadExistingPayment($order, $invoice) {
+    $payment_storage = $this->entityTypeManager->getStorage('commerce_payment');
+    $payments = $payment_storage->loadByProperties(['order_id' => $order->id(), 'remote_id' => $invoice->getId()]);
+    return array_pop($payments);
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function redirectOnPaymentError($order, $interactive = TRUE) {
+    /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
+    $checkout_flow = $order->get('checkout_flow')->entity;
+    $checkout_flow_plugin = $checkout_flow->getPlugin();
+    // for bc, check if method exists until issue resolved or other way found:
+    // see https://www.drupal.org/project/commerce/issues/2931044
+    if (method_exists($checkout_flow_plugin, 'setOrder')) {
+      $checkout_flow_plugin->setOrder($order);
+    }
+    $step_id = $this->checkoutOrderManager->getCheckoutStepId($order);
+    $previous_step_id = $checkout_flow_plugin->getPreviousStepId($step_id);
+
+    if ($interactive === TRUE) {
+      // Normal use-case onReturn().
+      $checkout_flow_plugin->redirectToStep($previous_step_id);
+    } else {
+      // If we call this from onNotify we need some workaround to not make the redirect result in fatal error.
+      // This is some kind of workaround, see https://www.drupal.org/project/commerce/issues/2931044
+      try {
+        $checkout_flow_plugin->redirectToStep($previous_step_id);
+      }
+      catch (NeedsRedirectException $exception) {
+        // Do nothing to avoid redirection.
+      }
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function createToken($network, $pairing_code) {
     // TODO: refactor, not sure what the point is to instantiate Bitpay class,
     // seems only used for config variables set/get/only keymanager but not private
     // keys. Or other way around use it also for api invoice requests.
@@ -526,7 +603,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
   /**
    * {@inheritdoc}
    */
-  public function getBtcPayClient() {
+  protected function getBtcPayClient() {
     // TODO: refactor to use Bitpay class? with common config abstraction (getBtcPayService?())
     $network = $this->getMode() . 'net';
 

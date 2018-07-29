@@ -2,6 +2,7 @@
 
 namespace Drupal\commerce_btcpay\Plugin\Commerce\PaymentGateway;
 
+use Bitpay\InvoiceInterface;
 use Drupal\commerce_order\Entity\OrderInterface;
 use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\SupportsNotificationsInterface;
 
@@ -77,6 +78,40 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
   public function checkInvoicePaidFull($invoice);
 
   /**
+   * Check BTCPay server invoice on payment error states.
+   *
+   * @param \Bitpay\InvoiceInterface $invoice
+   *
+   * @return boolean
+   */
+  public function checkInvoicePaymentFailed($invoice);
+
+  /**
+   * Check if a payment entity for a given order and invoice combination already
+   * exists and return it or NULL if not.
+   *
+   * @param \Drupal\commerce_order\Entity\OrderInterface $order
+   *   The order entity, or null.
+   * @param \Bitpay\InvoiceInterface $invoice
+   *   Remote BTCPay invoice.
+   *
+   * @return \Drupal\commerce_payment\Entity\PaymentInterface|NULL
+   */
+  public function loadExistingPayment(OrderInterface $order, InvoiceInterface $invoice);
+
+  /**
+   * Handle payment error and redirect previous checkout step.
+   *
+   * @param \Drupal\commerce_order\Entity\OrderInterface $order
+   *   The order entity, or null.
+   * @param bool $nonInteractive
+   *   Workaround param to handle redirects onNotify() which is non user facing.
+   *
+   *  @return void
+   */
+  public function redirectOnPaymentError(OrderInterface $order, $nonInteractive = FALSE);
+
+  /**
    * Update/create payment for order.
    *
    * Handles creation or update of existing payment entities.
@@ -84,7 +119,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
    * @param \Bitpay\InvoiceInterface $invoice
    *   Remote BTCPay invoice.
    *
-   * @return
+   * @return \Drupal\commerce_payment\Entity\PaymentInterface|NULL
    */
   public function processPayment($invoice);
 
