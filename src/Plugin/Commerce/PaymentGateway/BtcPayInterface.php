@@ -14,10 +14,11 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
   /**
    * Gets the server URL.
    *
-   * @return string
-   *   The server URL.
+   * @return array $host
+   *   Returns an array with host and port info: 1 => 'host', 2 => 'port'.
+   *   Defaults to port 443.
    */
-  public function getServerUrl();
+  public function getServerConfig();
 
   /**
    * Creates and saves a key pair and token.

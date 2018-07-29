@@ -127,7 +127,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $form['server_livenet'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Live server host'),
-      '#description' => $this->t('Enter a custom live server (without leading https://) here, e.g. <strong>btcpay.domain.tld</strong>. Make sure the server is working with https:// and has a valid SSL certificate.'),
+      '#description' => $this->t('Enter a custom live server (without leading https://) here, e.g. <strong>btcpay.domain.tld</strong>. Make sure the server is working with https:// and has a valid SSL certificate.  You can define a custom port using a colon e.g. <strong>btcpay.domain.tld:8080</strong>.'),
       '#default_value' => $this->configuration['server_livenet'],
       '#states' => [
         'visible' => [
@@ -135,6 +135,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ]
       ]
     ];
+
     $form['pairing_code_livenet'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Live server pairing code'),
@@ -146,6 +147,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ]
       ]
     ];
+
     $form['token_livenet'] = [
       '#type' => 'item',
       '#title' => $this->t('Live API token status'),
@@ -156,10 +158,11 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ]
       ]
     ];
+
     $form['server_testnet'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Test server host'),
-      '#description' => $this->t('Enter a custom test server (without leading https://) here, e.g. <strong>btcpay.domain.tld</strong>. Make sure the server is working with https:// and has a valid SSL certificate.'),
+      '#description' => $this->t('Enter a custom test server (without leading https://) here, e.g. <strong>btcpay.domain.tld</strong>. Make sure the server is working with https:// and has a valid SSL certificate. You can define a custom port using a colon e.g. <strong>btcpay.domain.tld:8080</strong>.'),
       '#default_value' => $this->configuration['server_testnet'],
       '#states' => [
         'visible' => [
@@ -167,6 +170,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ]
       ]
     ];
+
     $form['pairing_code_testnet'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Test pairing code'),
@@ -178,6 +182,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ]
       ]
     ];
+
     $form['token_testnet'] = [
       '#type' => 'item',
       '#title' => $this->t('Test API token status'),
@@ -188,6 +193,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ]
       ]
     ];
+
     $form['confirmation_speed'] = [
       '#type' => 'select',
       '#title' => $this->t('Confirmation speed'),
@@ -199,6 +205,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
         'low' => $this->t('Low')
       ],
     ];
+
     $form['debug_log'] = array(
       '#type' => 'checkbox',
       '#title' => $this->t('Enable verbose logging for debugging.'),
@@ -416,12 +423,21 @@ class BtcPay extends OffsitePaymentGatewayBase {
   /**
    * {@inheritdoc}
    */
-  protected function getServerUrl() {
+  protected function getServerConfig() {
     if ($this->getMode() === 'live') {
-      return $this->configuration['server_livenet'];
+      return $this->prepareServerUrl($this->configuration['server_livenet']);
     } else {
-      return $this->configuration['server_testnet'];
+      return $this->prepareServerUrl($this->configuration['server_testnet']);
     }
+  }
+
+  private function prepareServerUrl($url) {
+    $host = explode(':', $url);
+    if ( ! isset($host[1])) {
+      $host[1] = '443';
+    }
+
+    return $host;
   }
 
   /**
@@ -586,7 +602,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $sin->generate();
     $client = $bitpay->get('client');
     // Use our custom network (btcpay) server.
-    $remoteNetwork = new Customnet($this->getServerUrl(), 443);
+    $host = $this->getServerConfig();
+    $remoteNetwork = new Customnet($host[0], $host[1]);
     $client->setNetwork($remoteNetwork);
     try {
       $token = $client->createToken([
@@ -623,7 +640,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $publicKey = $storageEngine->load("private://btcpay_$network.pub");
 
       $client = new Client();
-      $remoteNetwork = new Customnet($this->getServerUrl(), 443); //inconsistent why have getServerUrl() not $this->configuration['']?
+      $host = $this->getServerConfig();
+      $remoteNetwork = new Customnet($host[0], $host[1]);
       $adapter = new CurlAdapter();
       $token = new Token();
       $token->setToken($this->state->get("commerce_btcpay.token_$network"));
