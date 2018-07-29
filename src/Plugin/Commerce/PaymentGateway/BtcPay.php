@@ -112,6 +112,16 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
+    // Show an error if no private filesystem is configured.
+    if ( ! \Drupal::hasService('stream_wrapper.private')) {
+      drupal_set_message(
+        t('Warning: you have no private filesystem set up. Please do so before you continue! See docs on <a href="@link" target="_blank">how to configure private files</a> and rebuild cache afterwards.',
+          ['@link' => 'https://www.drupal.org/docs/8/core/modules/file/overview#content-accessing-private-files']
+        ),
+        'error'
+      );
+    }
+
     $form = parent::buildConfigurationForm($form, $form_state);
 
     $form['server_livenet'] = [
