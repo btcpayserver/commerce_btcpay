@@ -4,6 +4,7 @@ namespace Drupal\commerce_btcpay\Plugin\Commerce\PaymentGateway;
 
 use Bitpay\Bitpay;
 use Bitpay\Client\Adapter\CurlAdapter;
+use Bitpay\Invoice;
 use Bitpay\PrivateKey;
 use Bitpay\PublicKey;
 use Bitpay\SinKey;
@@ -15,6 +16,7 @@ use Drupal\commerce\Response\NeedsRedirectException;
 use Drupal\commerce_checkout\CheckoutOrderManagerInterface;
 use Drupal\commerce_payment\PaymentMethodTypeManager;
 use Drupal\commerce_payment\PaymentTypeManager;
+use Drupal\commerce_price\Price;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Component\Utility\Crypt;
 use Drupal\commerce_order\Entity\OrderInterface;
@@ -360,7 +362,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
   /**
    * {@inheritdoc}
    */
-  protected function processPayment($invoice) {
+  protected function processPayment(Invoice $invoice) {
     // Load the order.
     /** @var OrderInterface $order */
     if (! $order = \Drupal\commerce_order\Entity\Order::load($invoice->getOrderId())) {
@@ -374,6 +376,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     if (!empty($payment = $this->loadExistingPayment($order, $invoice))) {
       $payment->setState($paymentState);
       $payment->setRemoteState($invoice->getStatus());
+      $payment->setAmount($this->calculateAmountPaid($invoice));
       $payment->save();
 
     } else {
@@ -381,7 +384,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $payment_storage = $this->entityTypeManager->getStorage('commerce_payment');
       $payment = $payment_storage->create([
         'state' => $paymentState,
-        'amount' => $order->getTotalPrice(),
+        'amount' => $this->calculateAmountPaid($invoice),
         'payment_gateway' => $this->entityId,
         'order_id' => $order->id(),
         'remote_id' => $invoice->getId(),
@@ -667,6 +670,25 @@ class BtcPay extends OffsitePaymentGatewayBase {
    */
   protected function debugEnabled() {
     return $this->configuration['debug_log'] == 1 ? TRUE : FALSE;
+  }
+
+  /**
+   * Calculate the total fiat amount paid.
+   *
+   * @param \Bitpay\Invoice $invoice
+   *
+   * @return \Drupal\commerce_price\Price
+   */
+  protected function calculateAmountPaid(Invoice $invoice) {
+    // Todo: for now we only update the amount when the payment is complete,
+    // extend that to partial payments across multiple cryptocurrencies
+    // https://github.com/btcpayserver/commerce_btcpay/issues/7
+    $allowed_states = ['confirmed', 'complete'];
+    if (in_array($invoice->getStatus(), $allowed_states)) {
+      return new Price((string) $invoice->getPrice(), $invoice->getCurrency()->getCode());
+    } else {
+      return new Price('0.00', $invoice->getCurrency()->getCode());
+    }
   }
 
 }
