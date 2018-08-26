@@ -623,8 +623,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       return;
     }
 
-    // Set the non user visable data using drupal state api, as non visible config gets
-    // wiped in parent::submitConfigurationForm
+    // Set the non user visible data using drupal state api, as non visible config gets
+    // wiped in parent::submitConfigurationForm.
     $this->state->set("commerce_btcpay.token_$network", (string) $token);
     $this->state->set("commerce_btcpay.private_key_password_$network", $password);
     drupal_set_message($this->t('New @network API token generated successfully. Encrypted keypair saved to the private filesystem.', ['@network' => $network]));

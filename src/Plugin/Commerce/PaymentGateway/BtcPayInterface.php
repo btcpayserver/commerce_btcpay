@@ -29,7 +29,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
    * @param string $network
    *   Network string we want to configure.
    * @param string $pairing_code
-   *   Pairing code provided by btcpay server.
+   *   Pairing code provided by BTCPayServer.
    *
    * @return void
    */
