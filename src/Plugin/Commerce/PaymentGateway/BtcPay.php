@@ -292,7 +292,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     if ($this->checkInvoicePaymentFailed($invoice) === TRUE) {
       // If the payment failed (voided/expired) for some reason we need to handle
       // that one here. As BitPay/BTCPay API does not support a cancel url.
-      $this->redirectOnPaymentError($order, TRUE);
+      $this->redirectOnPaymentError($order);
     }
   }
 
@@ -325,37 +325,24 @@ class BtcPay extends OffsitePaymentGatewayBase {
       throw new PaymentGatewayException('Could not find matching order.');
     }
 
-    // for bc, check if method exists until issue resolved or other way found:
-    // see https://www.drupal.org/project/commerce/issues/2931044
-    /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
-    $checkout_flow = $order->get('checkout_flow')->entity;
-    $checkout_flow_plugin = $checkout_flow->getPlugin();
-    if ( ! method_exists($checkout_flow_plugin, 'setOrder')) {
-      return;
-    }
-
-    // Set the order to completed state if there is an payment ongoing so that
-    // the order is not in state "draft" and visible for the user in order history.
-    // First process the payment, if successful redirect and set order completed
-    // via redirect.
+    // Set the order to next state after draft (so that the order is placed) if
+    // there is an payment completed.
     if ($payment = $this->processPayment($invoice) && $this->checkInvoicePaidFull($invoice)) {
-      $checkout_flow_plugin->setOrder($order);
-      $step_id = $this->checkoutOrderManager->getCheckoutStepId($order);
-      $next_step_id = $checkout_flow_plugin->getNextStepId($step_id);
+      $state_item = $order->get('state')->first();
+      $current_state = $state_item->getValue();
 
-      // This is some kind of workaround, see https://www.drupal.org/project/commerce/issues/2931044
-      try {
-        $checkout_flow_plugin->redirectToStep($next_step_id);
+      // We only want to transition order from "draft" to next state.
+      if ($current_state['value'] !== 'draft') {
+        $this->logger->info(t('onNotify callback: skipping order state transition, order already not in "draft" state anymore, current state: @current-state', ['@current-state' => $current_state['value']]));
+        return FALSE;
       }
-      catch (NeedsRedirectException $exception) {
-        // Do nothing to avoid redirection.
-      }
-    }
 
-    if ($this->checkInvoicePaymentFailed($invoice) === TRUE) {
-      // If the payment failed (voided/expired) for some reason we need to handle
-      // that one here. As BitPay/BTCPay API does not support a cancel url.
-      $this->redirectOnPaymentError($order, FALSE);
+      // Load transitions and apply the next one (place the order).
+      if ($transitions = $state_item->getTransitions()) {
+        $state_item->applyTransition(current($transitions));
+        $order->save();
+        $this->logger->info(t('onNotify callback: set transition successfully.'));
+      }
     }
   }
 
@@ -535,31 +522,15 @@ class BtcPay extends OffsitePaymentGatewayBase {
   /**
    * {@inheritdoc}
    */
-  protected function redirectOnPaymentError($order, $interactive = TRUE) {
+  protected function redirectOnPaymentError($order) {
+    drupal_set_message(t('The payment process could be completed due to expired or canceled invoice. Please try again or change payment option in previous step by clicking on the [back] button.'), 'error');
+
     /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
     $checkout_flow = $order->get('checkout_flow')->entity;
     $checkout_flow_plugin = $checkout_flow->getPlugin();
-    // for bc, check if method exists until issue resolved or other way found:
-    // see https://www.drupal.org/project/commerce/issues/2931044
-    if (method_exists($checkout_flow_plugin, 'setOrder')) {
-      $checkout_flow_plugin->setOrder($order);
-    }
     $step_id = $this->checkoutOrderManager->getCheckoutStepId($order);
     $previous_step_id = $checkout_flow_plugin->getPreviousStepId($step_id);
-
-    if ($interactive === TRUE) {
-      // Normal use-case onReturn().
-      $checkout_flow_plugin->redirectToStep($previous_step_id);
-    } else {
-      // If we call this from onNotify we need some workaround to not make the redirect result in fatal error.
-      // This is some kind of workaround, see https://www.drupal.org/project/commerce/issues/2931044
-      try {
-        $checkout_flow_plugin->redirectToStep($previous_step_id);
-      }
-      catch (NeedsRedirectException $exception) {
-        // Do nothing to avoid redirection.
-      }
-    }
+    $checkout_flow_plugin->redirectToStep($previous_step_id);
   }
 
   /**
