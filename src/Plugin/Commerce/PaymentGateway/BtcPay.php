@@ -107,6 +107,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
         'token_testnet' => '',
         'confirmation_speed' => 'medium',
         'debug_log' => NULL,
+        'privacy_email' => NULL,
+        'privacy_address' => '1',
       ] + parent::defaultConfiguration();
   }
 
@@ -208,6 +210,29 @@ class BtcPay extends OffsitePaymentGatewayBase {
       ],
     ];
 
+    $form['privacy'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Privacy settings'),
+      '#collapsible' => TRUE,
+      '#collapsed' => FALSE,
+    );
+
+    $form['privacy']['privacy_address'] = array(
+      '#type' => 'checkbox',
+      '#title' => $this->t('Do NOT transfer customer billing address'),
+      '#description' => $this->t('Check this if you do NOT want to transfer customer billing data to BTCPay Server.'),
+      '#return_value' => '1',
+      '#default_value' => $this->configuration['privacy_address'],
+    );
+
+    $form['privacy']['privacy_email'] = array(
+      '#type' => 'checkbox',
+      '#title' => $this->t('Do NOT transfer customer e-mail'),
+      '#description' => $this->t('Check this if you do NOT want to transfer customer e-mail to BTCPay Server. Customer will be asked for e-mail on BTCPay payment page.'),
+      '#return_value' => '1',
+      '#default_value' => $this->configuration['privacy_email'],
+    );
+
     $form['debug_log'] = array(
       '#type' => 'checkbox',
       '#title' => $this->t('Enable verbose logging for debugging.'),
@@ -235,6 +260,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $this->configuration['pairing_code_testnet'] = $values['pairing_code_testnet'];
       $this->configuration['confirmation_speed'] = $values['confirmation_speed'];
       $this->configuration['debug_log'] = $values['debug_log'];
+      $this->configuration['privacy_email'] = $values['privacy']['privacy_email'];
+      $this->configuration['privacy_address'] = $values['privacy']['privacy_address'];
       $this->configuration['mode'] = $values['mode'];
     }
   }
@@ -253,6 +280,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $this->configuration['pairing_code_testnet'] = '';
       $this->configuration['confirmation_speed'] = $values['confirmation_speed'];
       $this->configuration['debug_log'] = $values['debug_log'];
+      $this->configuration['privacy_email'] = $values['privacy']['privacy_email'];
+      $this->configuration['privacy_address'] = $values['privacy']['privacy_address'];
 
       // Create new keys and tokens on BTCPay Server if we have a pairing code.
       $networks = ['livenet' => 'pairing_code_livenet', 'testnet' => 'pairing_code_testnet'];
@@ -328,6 +357,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     // Set the order to next state after draft (so that the order is placed) if
     // there is an payment completed.
     if ($payment = $this->processPayment($invoice) && $this->checkInvoicePaidFull($invoice)) {
+      /** @var \Drupal\state_machine\Plugin\Field\FieldType\StateItemInterface $state_item */
       $state_item = $order->get('state')->first();
       $current_state = $state_item->getValue();
 
@@ -340,6 +370,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       // Load transitions and apply the next one (place the order).
       if ($transitions = $state_item->getTransitions()) {
         $state_item->applyTransition(current($transitions));
+        // Unlock the order if needed.
+        $order->isLocked() ? $order->unlock() : NULL;
         $order->save();
         $this->logger->info(t('onNotify callback: set transition successfully.'));
       }
@@ -452,23 +484,35 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $item->setPrice($order->getTotalPrice()->getNumber());
     $invoice->setItem($item);
 
-    // Add buyer data.
-    $buyer = new \Bitpay\Buyer();
-    /** @var \Drupal\address\Plugin\Field\FieldType\AddressItem $billing_address */
-    $billing_address = $order->getBillingProfile()->get('address')->first();
-    $buyer->setFirstName($billing_address->getGivenName())
-      ->setLastName($billing_address->getFamilyName())
-      ->setEmail($order->getEmail())
-      ->setAddress([
-        $billing_address->getAddressLine1(),
-        $billing_address->getAddressLine2(),
-      ])
-      ->setCity($billing_address->getLocality())
-      ->setState($billing_address->getAdministrativeArea())
-      ->setZip($billing_address->getPostalCode())
-      ->setCountry($billing_address->getCountryCode());
+    // Only add customer data if enabled.
+    if ($this->configuration['privacy_email'] !== '1' || $this->configuration['privacy_email'] !== '1') {
+      // Add buyer data.
+      $buyer = new \Bitpay\Buyer();
 
-    $invoice->setBuyer($buyer);
+      // Only set customer address if not disabled.
+      if ($this->configuration['privacy_address'] !== '1') {
+        /** @var \Drupal\address\Plugin\Field\FieldType\AddressItem $billing_address */
+        $billing_address = $order->getBillingProfile()->get('address')->first();
+        $buyer->setFirstName($billing_address->getGivenName())
+          ->setLastName($billing_address->getFamilyName())
+          ->setAddress([
+            $billing_address->getAddressLine1(),
+            $billing_address->getAddressLine2(),
+          ])
+          ->setCity($billing_address->getLocality())
+          ->setState($billing_address->getAdministrativeArea())
+          ->setZip($billing_address->getPostalCode())
+          ->setCountry($billing_address->getCountryCode());
+      }
+
+      // Only set customer email if not disabled.
+      if ($this->configuration['privacy_email'] !== '1') {
+        $buyer->setEmail($order->getEmail());
+      }
+
+      $invoice->setBuyer($buyer);
+    }
+
 
     // Set return url (where external payment provider should redirect to).
     $invoice->setRedirectUrl($options['return_url']);
