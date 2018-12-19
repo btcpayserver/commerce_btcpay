@@ -6,6 +6,9 @@ use Drupal\commerce_payment\Exception\PaymentGatewayException;
 use Drupal\commerce_payment\PluginForm\PaymentOffsiteForm as BasePaymentOffsiteForm;
 use Drupal\Core\Form\FormStateInterface;
 
+/**
+ * BtcPay payment off-site form.
+ */
 class BtcPayRedirectForm extends BasePaymentOffsiteForm {
 
   /**
@@ -23,7 +26,8 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
     /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
     $order = $payment->getOrder();
 
-    // Simulate an API call failing and throwing an exception, for test purposes.
+    // Simulate an API call failing and throwing an exception, for test
+    // purposes.
     // See PaymentCheckoutTest::testFailedCheckoutWithOffsiteRedirectGet().
     if ($order->getBillingProfile()->get('address')->family_name == 'TRIGGER FAIL') {
       throw new PaymentGatewayException('Could not get the redirect URL.');
@@ -35,12 +39,11 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
       'cancel_url' => $form['#cancel_url'],
     ];
 
-
-      /** @var \Bitpay\Invoice $btcPayInvoice **/
-      if (! $btcPayInvoice = $payment_gateway_plugin->createInvoice($order, $options)) {
-        $this->redirectToPreviousStep();
-      }
-
+    /** @var \Bitpay\Invoice $btcPayInvoice */
+    $btcPayInvoice = $payment_gateway_plugin->createInvoice($order, $options)
+    if (!$btcPayInvoice) {
+      $this->redirectToPreviousStep();
+    }
 
     // Store the remote invoice data on the order.
     $order->setData('btcpay', [
