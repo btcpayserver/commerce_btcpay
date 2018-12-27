@@ -532,8 +532,19 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   public function getInvoice($invoiceId) {
-    $client = $this->getBtcPayClient();
-    return $client->getInvoice($invoiceId);
+    try {
+      $client = $this->getBtcPayClient();
+      $invoice = $client->getInvoice($invoiceId);
+
+      if (empty($invoice->getId())) {
+        $this->logger->error(t('Error getting invoice data from remote server, likely authorization problem, or non existing invoice id.'));
+        return NULL;
+      }
+      return $invoice;
+    } catch (\Exception $e) {
+      $this->logger->error(t('Error getting invoice from remote server: @error', ['@error' => $e->getMessage()]));
+      return NULL;
+    }
   }
 
   /**
@@ -653,22 +664,28 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $network = $this->getMode() . 'net';
 
     try {
+      $client = new Client();
+
+      $host = $this->getServerConfig();
+      $remoteNetwork = new Customnet($host[0], $host[1]);
+      $client->setNetwork($remoteNetwork);
+
+      $adapter = new CurlAdapter();
+      $client->setAdapter($adapter);
+
+      $token = new Token();
+      $token->setToken($this->state->get("commerce_btcpay.token_$network"));
+      // Todo: further investigate: without setting this the php client library
+      // does not call the invoice endpoint with correct token parameter on
+      // calling getInvoice().
+      $token->setFacade('merchant');
+      $client->setToken($token);
+
       $storageEngine = new EncryptedFilesystemStorage($this->state->get("commerce_btcpay.private_key_password_$network"));
       $privateKey = $storageEngine->load("private://btcpay_$network.key");
       $publicKey = $storageEngine->load("private://btcpay_$network.pub");
-
-      $client = new Client();
-      $host = $this->getServerConfig();
-      $remoteNetwork = new Customnet($host[0], $host[1]);
-      $adapter = new CurlAdapter();
-      $token = new Token();
-      $token->setToken($this->state->get("commerce_btcpay.token_$network"));
-
       $client->setPrivateKey($privateKey);
       $client->setPublicKey($publicKey);
-      $client->setNetwork($remoteNetwork);
-      $client->setAdapter($adapter);
-      $client->setToken($token);
 
       return $client;
     } catch (\Exception $e) {
