@@ -62,8 +62,18 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
    * @throws \Drupal\commerce\Response\NeedsRedirectException
    */
   protected function redirectToPreviousStep() {
-    $step_id = $this->checkoutFlow->getPane('payment_information')->getStepId();
-    return $this->checkoutFlow->redirectToStep($step_id);
+    /** @var \Drupal\commerce_payment\Entity\PaymentInterface $payment */
+    $payment = $this->entity;
+
+    /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
+    $order = $payment->getOrder();
+
+    /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
+    $checkout_flow = $order->get('checkout_flow')->entity;
+    /** @var \Drupal\commerce_checkout\Plugin\Commerce\CheckoutFlow\CheckoutFlowWithPanesInterface $checkout_flow_plugin */
+    $checkout_flow_plugin = $checkout_flow->getPlugin();
+    $step_id = $checkout_flow_plugin->getPane('payment_information')->getStepId();
+    return $checkout_flow_plugin->redirectToStep($step_id);
   }
 
 }
