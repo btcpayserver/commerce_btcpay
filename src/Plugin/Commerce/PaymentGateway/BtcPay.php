@@ -2,6 +2,10 @@
 
 namespace Drupal\commerce_btcpay\Plugin\Commerce\PaymentGateway;
 
+use Bitpay\Buyer;
+use Bitpay\Item;
+use Bitpay\Currency;
+use Drupal\commerce_order\Entity\Order;
 use Bitpay\Bitpay;
 use Bitpay\Client\Adapter\CurlAdapter;
 use Bitpay\Invoice;
@@ -12,7 +16,6 @@ use Bitpay\Client\Client;
 use Bitpay\Network\Customnet;
 use Bitpay\Storage\EncryptedFilesystemStorage;
 use Bitpay\Token;
-use Drupal\commerce\Response\NeedsRedirectException;
 use Drupal\commerce_checkout\CheckoutOrderManagerInterface;
 use Drupal\commerce_payment\PaymentMethodTypeManager;
 use Drupal\commerce_payment\PaymentTypeManager;
@@ -98,18 +101,18 @@ class BtcPay extends OffsitePaymentGatewayBase {
    */
   public function defaultConfiguration() {
     return [
-        'mode' => 'test',
-        'pairing_code_livenet' => '',
-        'server_livenet' => '',
-        'token_livenet' => '',
-        'pairing_code_testnet' => '',
-        'server_testnet' => '',
-        'token_testnet' => '',
-        'confirmation_speed' => 'medium',
-        'debug_log' => NULL,
-        'privacy_email' => NULL,
-        'privacy_address' => '1',
-      ] + parent::defaultConfiguration();
+      'mode' => 'test',
+      'pairing_code_livenet' => '',
+      'server_livenet' => '',
+      'token_livenet' => '',
+      'pairing_code_testnet' => '',
+      'server_testnet' => '',
+      'token_testnet' => '',
+      'confirmation_speed' => 'medium',
+      'debug_log' => NULL,
+      'privacy_email' => NULL,
+      'privacy_address' => '1',
+    ] + parent::defaultConfiguration();
   }
 
   /**
@@ -117,7 +120,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
    */
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
     // Show an error if no private filesystem is configured.
-    if ( ! \Drupal::hasService('stream_wrapper.private')) {
+    if (!\Drupal::hasService('stream_wrapper.private')) {
       drupal_set_message(
         t('Warning: you have no private filesystem set up. Please do so before you continue! See docs on <a href="@link" target="_blank">how to configure private files</a> and rebuild cache afterwards.',
           ['@link' => 'https://www.drupal.org/docs/8/core/modules/file/overview#content-accessing-private-files']
@@ -135,9 +138,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#default_value' => $this->configuration['server_livenet'],
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live']
-        ]
-      ]
+          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live'],
+        ],
+      ],
     ];
 
     $form['pairing_code_livenet'] = [
@@ -147,9 +150,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#default_value' => $this->configuration['pairing_code_livenet'],
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live']
-        ]
-      ]
+          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live'],
+        ],
+      ],
     ];
 
     $form['token_livenet'] = [
@@ -158,9 +161,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#description' => $this->configuration['token_livenet'] ? $this->t('Configured') : $this->t('Not configured'),
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live']
-        ]
-      ]
+          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live'],
+        ],
+      ],
     ];
 
     $form['server_testnet'] = [
@@ -170,9 +173,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#default_value' => $this->configuration['server_testnet'],
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test']
-        ]
-      ]
+          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test'],
+        ],
+      ],
     ];
 
     $form['pairing_code_testnet'] = [
@@ -182,9 +185,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#default_value' => $this->configuration['pairing_code_testnet'],
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test']
-        ]
-      ]
+          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test'],
+        ],
+      ],
     ];
 
     $form['token_testnet'] = [
@@ -193,9 +196,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#description' => $this->configuration['token_testnet'] ? $this->t('Configured') : $this->t('Not configured'),
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test']
-        ]
-      ]
+          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test'],
+        ],
+      ],
     ];
 
     $form['confirmation_speed'] = [
@@ -206,39 +209,39 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#options' => [
         'high' => $this->t('High'),
         'medium' => $this->t('Medium'),
-        'low' => $this->t('Low')
+        'low' => $this->t('Low'),
       ],
     ];
 
-    $form['privacy'] = array(
+    $form['privacy'] = [
       '#type' => 'fieldset',
       '#title' => t('Privacy settings'),
       '#collapsible' => TRUE,
       '#collapsed' => FALSE,
-    );
+    ];
 
-    $form['privacy']['privacy_address'] = array(
+    $form['privacy']['privacy_address'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Do NOT transfer customer billing address'),
       '#description' => $this->t('Check this if you do NOT want to transfer customer billing data to BTCPay Server.'),
       '#return_value' => '1',
       '#default_value' => $this->configuration['privacy_address'],
-    );
+    ];
 
-    $form['privacy']['privacy_email'] = array(
+    $form['privacy']['privacy_email'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Do NOT transfer customer e-mail'),
       '#description' => $this->t('Check this if you do NOT want to transfer customer e-mail to BTCPay Server. Customer will be asked for e-mail on BTCPay payment page.'),
       '#return_value' => '1',
       '#default_value' => $this->configuration['privacy_email'],
-    );
+    ];
 
-    $form['debug_log'] = array(
+    $form['debug_log'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Enable verbose logging for debugging.'),
       '#return_value' => '1',
       '#default_value' => $this->configuration['debug_log'],
-    );
+    ];
 
     return $form;
   }
@@ -252,7 +255,6 @@ class BtcPay extends OffsitePaymentGatewayBase {
     if (!$form_state->getErrors() && $form_state->isSubmitted()) {
       // TODO: check values hostname, pairing code etc.
       // TODO: check if private filesystem is configured in drupal.
-
       $values = $form_state->getValue($form['#parents']);
       $this->configuration['server_livenet'] = $values['server_livenet'];
       $this->configuration['pairing_code_livenet'] = $values['pairing_code_livenet'];
@@ -303,14 +305,15 @@ class BtcPay extends OffsitePaymentGatewayBase {
       throw new PaymentGatewayException('Invoice id missing for this BTCPay transaction.');
     }
 
-    // As original BitPay API has no tokens to verfiy the counterparty server, we
-    // need to query the invoice state to ensure it is payed.
-    if ( ! $invoice = $this->getInvoice($order_btcpay_data['invoice_id'])) {
-      // TODO: check to silently fail, display message and redirect back to cart.
+    // As original BitPay API has no tokens to verify the counterparty server,
+    // we need to query the invoice state to ensure it is payed.
+    if (!$invoice = $this->getInvoice($order_btcpay_data['invoice_id'])) {
+      // TODO: silently fail, display message and redirect back to cart.
       throw new PaymentGatewayException('Invoice not found.');
     }
 
-    // If the user is anonymous and they provided the email during payment, add it to the order.
+    // If the user is anonymous and they provided the email during payment, add
+    // it to the order.
     if (empty($order->mail)) {
       $order->setEmail($request->query->get('buyerEmail'));
     }
@@ -319,8 +322,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $this->processPayment($invoice);
 
     if ($this->checkInvoicePaymentFailed($invoice) === TRUE) {
-      // If the payment failed (voided/expired) for some reason we need to handle
-      // that one here. As BitPay/BTCPay API does not support a cancel url.
+      // If the payment failed (voided/expired) for some reason we need to
+      // handle that one here. As BitPay/BTCPay API does not support a cancel
+      // url.
       $this->redirectOnPaymentError($order);
     }
   }
@@ -333,7 +337,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $this->logger->debug(print_r($request->getContent(), TRUE));
     }
 
-    if (! $responseData = json_decode($request->getContent(), TRUE)) {
+    if (!$responseData = json_decode($request->getContent(), TRUE)) {
       throw new PaymentGatewayException('Response data missing, aborting.');
     }
 
@@ -341,8 +345,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       throw new PaymentGatewayException('Invoice id missing for this BTCPay transaction, aborting.');
     }
 
-    // As original BitPay API has no tokens to verify the counterparty server, we
-    // need to query the invoice state to ensure it is payed.
+    // As original BitPay API has no tokens to verify the counterparty server,
+    // we need to query the invoice state to ensure it is payed.
     /** @var \Bitpay\Invoice $invoice */
     $invoice = $this->getInvoice($responseData['id']);
     if (empty($invoice)) {
@@ -350,7 +354,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     }
 
     /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
-    if (! $order = \Drupal\commerce_order\Entity\Order::load($invoice->getOrderId())) {
+    if (!$order = Order::load($invoice->getOrderId())) {
       throw new PaymentGatewayException('Could not find matching order.');
     }
 
@@ -383,8 +387,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
    */
   protected function processPayment(Invoice $invoice) {
     // Load the order.
-    /** @var OrderInterface $order */
-    if (! $order = \Drupal\commerce_order\Entity\Order::load($invoice->getOrderId())) {
+    /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
+    if (!$order = Order::load($invoice->getOrderId())) {
       throw new PaymentGatewayException('processPayment: Could not find matching order.');
     }
 
@@ -398,7 +402,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $payment->setAmount($this->calculateAmountPaid($invoice));
       $payment->save();
 
-    } else {
+    }
+    else {
       // As no payment for that order ID exists create a new one.
       $payment_storage = $this->entityTypeManager->getStorage('commerce_payment');
       $payment = $payment_storage->create([
@@ -412,9 +417,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $payment->save();
     }
 
-    return (! empty($payment)) ? $payment : NULL;
+    return (!empty($payment)) ? $payment : NULL;
   }
-
 
   /**
    * {@inheritdoc}
@@ -427,13 +431,16 @@ class BtcPay extends OffsitePaymentGatewayBase {
       case "paid":
         $mappedState = "authorization";
         break;
+
       case "confirmed":
       case "complete":
         $mappedState = "completed";
         break;
+
       case "expired":
         $mappedState = "authorization_expired";
         break;
+
       case "invalid":
         $mappedState = "authorization_voided";
         break;
@@ -448,14 +455,18 @@ class BtcPay extends OffsitePaymentGatewayBase {
   protected function getServerConfig() {
     if ($this->getMode() === 'live') {
       return $this->prepareServerUrl($this->configuration['server_livenet']);
-    } else {
+    }
+    else {
       return $this->prepareServerUrl($this->configuration['server_testnet']);
     }
   }
 
+  /**
+   * Prepares the server URL.
+   */
   private function prepareServerUrl($url) {
     $host = explode(':', $url);
-    if ( ! isset($host[1])) {
+    if (!isset($host[1])) {
       $host[1] = '443';
     }
 
@@ -466,8 +477,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   public function createInvoice(OrderInterface $order = NULL, $options = []) {
-    $invoice = new \Bitpay\Invoice;
-    $currency = new \Bitpay\Currency();
+    $invoice = new Invoice();
+    $currency = new Currency();
     $currency->setCode($order->getTotalPrice()->getCurrencyCode());
     $invoice->setCurrency($currency);
     $invoice->setPrice($order->getTotalPrice()->getNumber());
@@ -476,8 +487,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $invoice->setPosData($order->id());
     $invoice->setTransactionSpeed($this->configuration['confirmation_speed']);
 
-    // As bitpay API currently supports only one item we set it to the store name.
-    $item = new \Bitpay\Item();
+    // As bitpay API currently supports only one item we set it to the store
+    // name.
+    $item = new Item();
     $entity_manager = \Drupal::entityTypeManager();
     $store = $entity_manager->getStorage('commerce_store')->load($order->getStoreId());
     $item->setDescription($store->getName());
@@ -487,7 +499,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     // Only add customer data if enabled.
     if ($this->configuration['privacy_email'] !== '1' || $this->configuration['privacy_email'] !== '1') {
       // Add buyer data.
-      $buyer = new \Bitpay\Buyer();
+      $buyer = new Buyer();
 
       // Only set customer address if not disabled.
       if ($this->configuration['privacy_address'] !== '1') {
@@ -513,7 +525,6 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $invoice->setBuyer($buyer);
     }
 
-
     // Set return url (where external payment provider should redirect to).
     $invoice->setRedirectUrl($options['return_url']);
     // Set notification url.
@@ -522,7 +533,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
     try {
       $client = $this->getBtcPayClient();
       return $client->createInvoice($invoice);
-    } catch (\Exception $e) {
+    }
+    catch (\Exception $e) {
       $this->logger->error(t('Error on creating invoice on remote server: @error', ['@error' => $e->getMessage()]));
       return NULL;
     }
@@ -593,9 +605,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
    */
   protected function createToken($network, $pairing_code) {
     // TODO: refactor, not sure what the point is to instantiate Bitpay class,
-    // seems only used for config variables set/get/only keymanager but not private
-    // keys. Or other way around use it also for api invoice requests.
-
+    // seems only used for config variables set/get/only keymanager but not
+    // private keys. Or other way around use it also for api invoice requests.
     global $base_url;
     $password = Crypt::randomBytesBase64();
     $bitpay = new Bitpay([
@@ -649,7 +660,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       return;
     }
 
-    // Set the non user visible data using drupal state api, as non visible config gets
+    // Set the non user visible data using drupal state api, as non visible
+    // config gets.
     // wiped in parent::submitConfigurationForm.
     $this->state->set("commerce_btcpay.token_$network", (string) $token);
     $this->state->set("commerce_btcpay.private_key_password_$network", $password);
@@ -660,7 +672,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   protected function getBtcPayClient() {
-    // TODO: refactor to use Bitpay class? with common config abstraction (getBtcPayService?())
+    // TODO: refactor to use Bitpay class? with common config abstraction
+    // (getBtcPayService?())
     $network = $this->getMode() . 'net';
 
     try {
@@ -688,7 +701,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $client->setPublicKey($publicKey);
 
       return $client;
-    } catch (\Exception $e) {
+    }
+    catch (\Exception $e) {
       $this->logger->error(t('Error getting BitPay Client: @error', ['@error' => $e->getMessage()]));
       return NULL;
     }
@@ -699,6 +713,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * Check if verbose logging enabled.
    *
    * @return bool
+   *   Whether debugging is enabled or not.
    */
   protected function debugEnabled() {
     return $this->configuration['debug_log'] == 1 ? TRUE : FALSE;
@@ -708,8 +723,10 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * Calculate the total fiat amount paid.
    *
    * @param \Bitpay\Invoice $invoice
+   *   The Bitpay invoice to calculate the paid amount for.
    *
    * @return \Drupal\commerce_price\Price
+   *   The price object for the amount paid.
    */
   protected function calculateAmountPaid(Invoice $invoice) {
     // Todo: for now we only update the amount when the payment is complete,
@@ -718,7 +735,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $allowed_states = ['confirmed', 'complete'];
     if (in_array($invoice->getStatus(), $allowed_states)) {
       return new Price((string) $invoice->getPrice(), $invoice->getCurrency()->getCode());
-    } else {
+    }
+    else {
       return new Price('0.00', $invoice->getCurrency()->getCode());
     }
   }
