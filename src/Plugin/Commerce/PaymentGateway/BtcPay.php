@@ -41,7 +41,8 @@ use Symfony\Component\HttpFoundation\Request;
  *   display_label = @Translation("Cryptocurrency (BTC, LTC, Lightning Network)"),
  *   forms = {
  *     "offsite-payment" = "Drupal\commerce_btcpay\PluginForm\BtcPayRedirectForm",
- *   }
+ *   },
+ *   requires_billing_information = FALSE,
  * )
  */
 class BtcPay extends OffsitePaymentGatewayBase {
