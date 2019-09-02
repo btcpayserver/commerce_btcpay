@@ -497,13 +497,14 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $item->setPrice($order->getTotalPrice()->getNumber());
     $invoice->setItem($item);
 
-    // Only add customer data if enabled.
-    if ($this->configuration['privacy_email'] !== '1' || $this->configuration['privacy_email'] !== '1') {
-      // Add buyer data.
+    // Only add customer data if allowed by privacy settings.
+    if ($this->configuration['privacy_email'] !== '1' || $this->configuration['privacy_address'] !== '1') {
+      // Prepare BTCPay buyer object.
       $buyer = new Buyer();
 
-      // Only set customer address if not disabled.
-      if ($this->configuration['privacy_address'] !== '1') {
+      // Only set customer data if billing profile is enaled and also honor
+      // address privacy setting.
+      if ($order->getBillingProfile() && $this->configuration['privacy_address'] !== '1') {
         /** @var \Drupal\address\Plugin\Field\FieldType\AddressItem $billing_address */
         $billing_address = $order->getBillingProfile()->get('address')->first();
         $buyer->setFirstName($billing_address->getGivenName())
