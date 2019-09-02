@@ -10,7 +10,7 @@ A Drupal Commerce demo store connected with a (testnet) BTCPay Server where you 
 
 ## Requirements
 
-* BTCPay Server ([self hosted or 3rd party](https://docs.btcpayserver.org/deployment/deployment) or [quick start with a testserver](https://docs.btcpayserver.org/btcpay-basics/tryitout) )
+* BTCPay Server ([self hosted or 3rd party](https://docs.btcpayserver.org/deployment/deployment) or [quick start with a testserver](https://docs.btcpayserver.org/btcpay-basics/tryitout))
 * Drupal Commerce 2.x installed ([installation guide](https://docs.drupalcommerce.org/commerce2/developer-guide/install-update/installation))  
 * Drupal: [configured and writable private file system](https://www.drupal.org/docs/8/core/modules/file/overview#content-accessing-private-files)
 
