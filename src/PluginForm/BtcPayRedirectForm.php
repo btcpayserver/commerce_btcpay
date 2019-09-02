@@ -25,7 +25,7 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
 
     // Simulate an API call failing and throwing an exception, for test purposes.
     // See PaymentCheckoutTest::testFailedCheckoutWithOffsiteRedirectGet().
-    if ($order->getBillingProfile()->get('address')->family_name == 'TRIGGER FAIL') {
+    if ($order->getBillingProfile() && $order->getBillingProfile()->get('address')->family_name == 'TRIGGER FAIL') {
       throw new PaymentGatewayException('Could not get the redirect URL.');
     }
 
