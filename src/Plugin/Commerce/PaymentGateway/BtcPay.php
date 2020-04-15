@@ -122,12 +122,9 @@ class BtcPay extends OffsitePaymentGatewayBase {
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
     // Show an error if no private filesystem is configured.
     if (!\Drupal::hasService('stream_wrapper.private')) {
-      drupal_set_message(
-        t('Warning: you have no private filesystem set up. Please do so before you continue! See docs on <a href="@link" target="_blank">how to configure private files</a> and rebuild cache afterwards.',
-          ['@link' => 'https://www.drupal.org/docs/8/core/modules/file/overview#content-accessing-private-files']
-        ),
-        'error'
-      );
+      $this->messenger()->addError(t('Error: you have no private filesystem set up. Please do so before you continue! See docs on <a href="@link" target="_blank">how to configure private files</a> and rebuild cache afterwards.',
+        ['@link' => 'https://www.drupal.org/docs/8/core/modules/file/overview#content-accessing-private-files']
+      ));
     }
 
     $form = parent::buildConfigurationForm($form, $form_state);
@@ -592,7 +589,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
    * {@inheritdoc}
    */
   protected function redirectOnPaymentError($order) {
-    drupal_set_message(t('The payment process could be completed due to expired or canceled invoice. Please try again or change payment option in previous step by clicking on the [back] button.'), 'error');
+    $this->messenger()->addError(t('The payment process could be completed due to expired or canceled invoice. Please try again or change payment option in previous step by clicking on the [back] button.'));
 
     /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
     $checkout_flow = $order->get('checkout_flow')->entity;
@@ -635,7 +632,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $keyManager->persist($publicKey);
     }
     catch (\Exception $e) {
-      drupal_set_message($this->t('Failed to create key pair: %message', ['%message' => $e->getMessage()]), 'error');
+      $this->messenger()->addError($this->t('Failed to create key pair: %message', ['%message' => $e->getMessage()]));
       return;
     }
     // Create API access token.
@@ -655,10 +652,10 @@ class BtcPay extends OffsitePaymentGatewayBase {
       ]);
     }
     catch (\Exception $e) {
-      drupal_set_message($this->t('Failed to create @network token: %message', [
+      $this->messenger()->addError($this->t('Failed to create @network token: %message', [
         '%message' => $e->getMessage(),
         '@network' => $network,
-      ]), 'error');
+      ]));
       return;
     }
 
@@ -667,7 +664,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     // wiped in parent::submitConfigurationForm.
     $this->state->set("commerce_btcpay.token_$network", (string) $token);
     $this->state->set("commerce_btcpay.private_key_password_$network", $password);
-    drupal_set_message($this->t('New @network API token generated successfully. Encrypted keypair saved to the private filesystem.', ['@network' => $network]));
+    $this->messenger()->addStatus($this->t('New @network API token generated successfully. Encrypted keypair saved to the private filesystem.', ['@network' => $network]));
   }
 
   /**
