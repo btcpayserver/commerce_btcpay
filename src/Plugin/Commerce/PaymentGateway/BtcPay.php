@@ -12,7 +12,7 @@ use Bitpay\Invoice;
 use Bitpay\PrivateKey;
 use Bitpay\PublicKey;
 use Bitpay\SinKey;
-use Bitpay\Client\Client;
+use BitPaySDK\Client;
 use Bitpay\Network\Customnet;
 use Bitpay\Storage\EncryptedFilesystemStorage;
 use Bitpay\Token;

@@ -36,7 +36,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
   /**
    * Instantiate and return REST API Client.
    *
-   * @return \Bitpay\Client\Client|null
+   * @return \BitPaySDK\Client|null
    *   Returns the client or NULL.
    */
   public function getBtcPayClient();

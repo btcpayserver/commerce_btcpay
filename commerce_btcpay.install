@@ -6,10 +6,10 @@
 function commerce_btcpay_requirements($phase) {
   $requirements = [];
   if ($phase == 'install') {
-    if (!class_exists('\Bitpay\Client\Client')) {
+    if (!class_exists('\BitPaySDK\Client')) {
       $requirements['commerce_btcpay_requirement'] = [
         'title' => t('BitPay php-client library missing.'),
-        'description' => t('Commerce BTCPay requires the BitPay php-client library: https://packagist.org/packages/bitpay/php-client which is installed automatically if you use Composer.'),
+        'description' => t('Commerce BTCPay requires the BitPay SDK library: https://packagist.org/packages/bitpay/sdk which is installed automatically if you use Composer.'),
         'severity' => REQUIREMENT_ERROR,
       ];
     }
