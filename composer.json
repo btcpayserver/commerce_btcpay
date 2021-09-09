@@ -8,7 +8,7 @@
     "source": "https://github.com/ndeet/commerce_btcpay"
   },
   "require": {
-    "bitpay/php-client": "dev-master#bac676d2d71ef3014c4b3b1884c3e20fde614b46"
+    "ndeet/php-bitpay-client-legacy": "dev-master"
   },
   "minimum-stability": "dev"
 }
