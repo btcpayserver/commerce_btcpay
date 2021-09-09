@@ -5,10 +5,10 @@
   "license": "GPL-2.0+",
   "homepage": "https://www.drupal.org/project/commerce_btcpay",
   "support": {
-    "source": "https://github.com/ndeet/commerce_btcpay"
+    "source": "https://github.com/btcpayserver/commerce_btcpay"
   },
   "require": {
-    "bitpay/php-client": "^2.2.20"
+    "btcpayserver/btcpayserver-php-client": "v1.0.0"
   },
   "minimum-stability": "dev"
 }
