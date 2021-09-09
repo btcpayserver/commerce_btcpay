@@ -2,7 +2,7 @@
 
 namespace Drupal\commerce_btcpay\Plugin\Commerce\PaymentGateway;
 
-use BTCPayServer\InvoiceInterface;
+use Bitpay\InvoiceInterface;
 use Drupal\commerce_order\Entity\OrderInterface;
 use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\SupportsNotificationsInterface;
 
@@ -36,7 +36,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
   /**
    * Instantiate and return REST API Client.
    *
-   * @return \BTCPayServer\Client\Client|null
+   * @return \Bitpay\Client\Client|null
    *   Returns the client or NULL.
    */
   public function getBtcPayClient();
@@ -49,7 +49,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
    * @param array $options
    *   Optional data like redirect url etc.
    *
-   * @return \BTCPayServer\Invoice
+   * @return \Bitpay\Invoice
    *   the created invoice.
    */
   public function createInvoice(OrderInterface $order = NULL, array $options = []);
@@ -62,7 +62,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
    * @param string $invoiceId
    *   The remote invoice ID.
    *
-   * @return \BTCPayServer\Invoice|null
+   * @return \Bitpay\Invoice|null
    *   The queried invoice or NULL.
    */
   public function getInvoice($invoiceId);
@@ -70,7 +70,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
   /**
    * Check BTCPay server invoice and check status.
    *
-   * @param \BTCPayServer\InvoiceInterface $invoice
+   * @param \Bitpay\InvoiceInterface $invoice
    *   Remote BTCPay invoice.
    *
    * @return bool
@@ -81,7 +81,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
   /**
    * Check BTCPay server invoice on payment error states.
    *
-   * @param \BTCPayServer\InvoiceInterface $invoice
+   * @param \Bitpay\InvoiceInterface $invoice
    *   Remote BTCPay invoice.
    *
    * @return bool
@@ -94,7 +94,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
    *
    * @param \Drupal\commerce_order\Entity\OrderInterface $order
    *   The order entity, or null.
-   * @param \BTCPayServer\InvoiceInterface $invoice
+   * @param \Bitpay\InvoiceInterface $invoice
    *   Remote BTCPay invoice.
    *
    * @return \Drupal\commerce_payment\Entity\PaymentInterface|null
@@ -117,7 +117,7 @@ interface BtcPayInterface extends SupportsNotificationsInterface {
    *
    * Handles creation or update of existing payment entities.
    *
-   * @param \BTCPayServer\InvoiceInterface $invoice
+   * @param \Bitpay\InvoiceInterface $invoice
    *   Remote BTCPay invoice.
    *
    * @return \Drupal\commerce_payment\Entity\PaymentInterface|null

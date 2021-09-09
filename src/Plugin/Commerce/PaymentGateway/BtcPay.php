@@ -2,20 +2,20 @@
 
 namespace Drupal\commerce_btcpay\Plugin\Commerce\PaymentGateway;
 
-use BTCPayServer\Buyer;
-use BTCPayServer\Item;
-use BTCPayServer\Currency;
+use Bitpay\Buyer;
+use Bitpay\Item;
+use Bitpay\Currency;
 use Drupal\commerce_order\Entity\Order;
-use BTCPayServer\Bitpay;
-use BTCPayServer\Client\Adapter\CurlAdapter;
-use BTCPayServer\Invoice;
-use BTCPayServer\PrivateKey;
-use BTCPayServer\PublicKey;
-use BTCPayServer\SinKey;
-use BTCPayServer\Client\Client;
-use BTCPayServer\Network\Customnet;
-use BTCPayServer\Storage\EncryptedFilesystemStorage;
-use BTCPayServer\Token;
+use Bitpay\Bitpay;
+use Bitpay\Client\Adapter\CurlAdapter;
+use Bitpay\Invoice;
+use Bitpay\PrivateKey;
+use Bitpay\PublicKey;
+use Bitpay\SinKey;
+use Bitpay\Client\Client;
+use Bitpay\Network\Customnet;
+use Bitpay\Storage\EncryptedFilesystemStorage;
+use Bitpay\Token;
 use Drupal\commerce_checkout\CheckoutOrderManagerInterface;
 use Drupal\commerce_payment\PaymentMethodTypeManager;
 use Drupal\commerce_payment\PaymentTypeManager;
@@ -345,7 +345,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
 
     // As original BitPay API has no tokens to verify the counterparty server,
     // we need to query the invoice state to ensure it is payed.
-    /** @var \BTCPayServer\Invoice $invoice */
+    /** @var \Bitpay\Invoice $invoice */
     $invoice = $this->getInvoice($responseData['id']);
     if (empty($invoice)) {
       throw new PaymentGatewayException('Invoice not found on BTCPay server.');
@@ -620,7 +620,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     ]);
     try {
       // Generate and store private key.
-      /** @var \BTCPayServer\KeyManager $keyManager */
+      /** @var \Bitpay\KeyManager $keyManager */
       $keyManager = $bitpay->get('key_manager');
       $privateKey = new PrivateKey($bitpay->getContainer()->getParameter('bitpay.private_key'));
       $privateKey->generate();
@@ -721,7 +721,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
   /**
    * Calculate the total fiat amount paid.
    *
-   * @param \BTCPayServer\Invoice $invoice
+   * @param \Bitpay\Invoice $invoice
    *   The Bitpay invoice to calculate the paid amount for.
    *
    * @return \Drupal\commerce_price\Price

@@ -35,7 +35,7 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
       'cancel_url' => $form['#cancel_url'],
     ];
 
-    /** @var \BTCPayServer\Invoice $btcPayInvoice **/
+    /** @var \Bitpay\Invoice $btcPayInvoice **/
     if (! $btcPayInvoice = $payment_gateway_plugin->createInvoice($order, $options)) {
       $this->redirectToPreviousStep();
     }
