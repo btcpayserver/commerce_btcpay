@@ -5,6 +5,7 @@ namespace Drupal\commerce_btcpay\Plugin\Commerce\PaymentGateway;
 use Bitpay\Buyer;
 use Bitpay\Item;
 use Bitpay\Currency;
+use Bitpay\KeyManager;
 use Drupal\commerce_order\Entity\Order;
 use Bitpay\Bitpay;
 use Bitpay\Client\Adapter\CurlAdapter;
@@ -620,8 +621,8 @@ class BtcPay extends OffsitePaymentGatewayBase {
     ]);
     try {
       // Generate and store private key.
-      /** @var \Bitpay\KeyManager $keyManager */
-      $keyManager = $bitpay->get('key_manager');
+      $storage = new EncryptedFilesystemStorage($password);
+      $keyManager = new KeyManager($storage);
       $privateKey = new PrivateKey($bitpay->getContainer()->getParameter('bitpay.private_key'));
       $privateKey->generate();
       $keyManager->persist($privateKey);
@@ -639,7 +640,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
     $sin = new SinKey();
     $sin->setPublicKey($publicKey);
     $sin->generate();
-    $client = $bitpay->get('client');
+    $client = new Client();
     // Use our custom network (btcpay) server.
     $host = $this->getServerConfig();
     $remoteNetwork = new Customnet($host[0], $host[1]);
