@@ -1,14 +1,14 @@
 {
   "name": "drupal/commerce_btcpay",
-  "description": "BTCPay cryptocurrency payment module. Compatible with BitPay API and supporting multiple cryptocurrencies.",
+  "description": "BTCPay Bitcoin and cryptocurrency payment module. Compatible with BitPay API and supporting multiple cryptocurrencies.",
   "type": "drupal-module",
   "license": "GPL-2.0+",
   "homepage": "https://www.drupal.org/project/commerce_btcpay",
   "support": {
-    "source": "https://github.com/ndeet/commerce_btcpay"
+    "source": "https://github.com/btcpayserver/commerce_btcpay"
   },
   "require": {
-    "ndeet/php-bitpay-client-legacy": "dev-master"
+    "ndeet/php-bitpay-client-legacy": "^4.0"
   },
   "minimum-stability": "dev"
 }

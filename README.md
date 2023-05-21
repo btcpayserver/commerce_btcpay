@@ -46,30 +46,28 @@ https://youtu.be/XBZwyC2v48s
       You should see a message that the tokens were successfully created.
 
 ## Status
-**This module is currently in alpha stage and under active development.**    
+**This module is currently in alpha stage but has been working for a while without issues.**    
 Releases will be made available through the project page on drupal.org https://drupal.org/project/commerce_btcpay
 
 ## About BTCPay Server
 Short excerpt from [their project page](https://github.com/btcpayserver/btcpayserver):
->BTCPay Server is an Open Source payment processor, written in C#, that conforms to the invoice API of Bitpay. This allows easy migration of your code base to your own, self-hosted payment processor.
-> 
->This solution is for you if:
-> 
-> - You are currently using Bitpay as a payment processor but are worried about their commitment to Bitcoin in the future
-> - You want to be in control of your own funds
- Bitpay compliance team decided to reject your application
-> - You want lower fees (we support Segwit)
+>BTCPay Server is a self-hosted, open-source cryptocurrency payment processor. It's secure, private, censorship-resistant and free.
 
-**To get a full overview check out their [great documentation](https://docs.btcpayserver.org).**
+**To get a full overview check out our [documentation](https://docs.btcpayserver.org).**
 
 
 ## Supported cryptocurrencies
 BTCPay supports a vast variety of cryptocurrencies:
 - BTC (Bitcoin)
-- LTC (Litecoin)
-- 2nd layer [Lightning Network](https://lightning.network) for instant micro-transactions (BTC + LTC)
-- some altcoins using full node integration
-- or most other major altcoins using Changelly for conversion
+- BTC 2nd layer [Lightning Network](https://bitcoiner.guide/lightning/) for instant settled low fee transactions
+- some altcoins using full node integration (XMR, LTC, ...)
+- and most other major altcoins through plugins via Trocador, SideShift and FixedFloat
 
 ## Compatible with BitPay API
-BTCPay was created to be a alternative to 3rd party payment provider [BitPay](https://bitpay.com). Therefore BTCPay is invoice API compatible and you can use this payment plugin also with the official BitPay API and sites if you want. But the power of BTCPay is that you can become your own payment provider.
+BTCPay was created to be a alternative to 3rd party payment provider [BitPay](https://bitpay.com). Therefore BTCPay is invoice API compatible and you can use this payment plugin also with the official BitPay API and sites if you want. But the power of BTCPay is that you can become your own payment provider. 
+
+Teaser, future versions of this plugin will be based on the BTCPay Server Greenfield API which is much more powerful and allows more features.
+
+
+## Get Support
+You can open an issue on our [Github repository](https://github.com/btcpayserver/commerce_btcpay/issues) or join us on [Telegram](https://t.me/btcpayserver) or [Mattermost chat](http://chat.btcpayserver.org/)
