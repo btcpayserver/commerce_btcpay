@@ -408,7 +408,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       $payment = $payment_storage->create([
         'state' => $paymentState,
         'amount' => $this->calculateAmountPaid($invoice),
-        'payment_gateway' => $this->entityId,
+        'payment_gateway' => $this->parentEntity->id(),
         'order_id' => $order->id(),
         'remote_id' => $invoice->getId(),
         'remote_state' => $invoice->getStatus(),
