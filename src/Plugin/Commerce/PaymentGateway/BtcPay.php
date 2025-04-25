@@ -127,8 +127,72 @@ class BtcPay extends OffsitePaymentGatewayBase {
         ['@link' => 'https://www.drupal.org/docs/8/core/modules/file/overview#content-accessing-private-files']
       ));
     }
+    
+    // Ensure all configuration values are properly initialized
+    $defaults = $this->defaultConfiguration();
+    
+    // Apply defaults to any missing configuration values
+    foreach ($defaults as $key => $value) {
+      if (!isset($this->configuration[$key])) {
+        $this->configuration[$key] = $value;
+      }
+    }
+    
+    // Make sure we have the parent configuration
+    $parent_config = parent::defaultConfiguration();
+    
+    // Initialize any configuration values that might be expected to be arrays
+    foreach ($parent_config as $key => $value) {
+      if (!isset($this->configuration[$key])) {
+        $this->configuration[$key] = is_array($value) ? [] : $value;
+      } elseif (is_array($value) && !is_array($this->configuration[$key])) {
+        $this->configuration[$key] = [];
+      }
+    }
 
-    $form = parent::buildConfigurationForm($form, $form_state);
+    try {
+      $form = parent::buildConfigurationForm($form, $form_state);
+      
+      // Add our own mode selector if it doesn't exist
+      if (!isset($form['mode'])) {
+        $form['mode'] = [
+          '#type' => 'radios',
+          '#title' => $this->t('Mode'),
+          '#options' => [
+            'live' => $this->t('Live'),
+            'test' => $this->t('Test'),
+          ],
+          '#default_value' => $this->configuration['mode'],
+          '#required' => TRUE,
+          '#weight' => -10,
+          '#attributes' => ['id' => 'edit-mode'],
+        ];
+      } else {
+        // Add an ID to the existing mode selector
+        if (!isset($form['mode']['#attributes'])) {
+          $form['mode']['#attributes'] = [];
+        }
+        $form['mode']['#attributes']['id'] = 'edit-mode';
+      }
+    } catch (\TypeError $e) {
+      // Log the error but continue with the form
+      \Drupal::logger('commerce_btcpay')->error('TypeError in parent::buildConfigurationForm: @message', ['@message' => $e->getMessage()]);
+      $form = [];
+      
+      // Add our own mode selector
+      $form['mode'] = [
+        '#type' => 'radios',
+        '#title' => $this->t('Mode'),
+        '#options' => [
+          'live' => $this->t('Live'),
+          'test' => $this->t('Test'),
+        ],
+        '#default_value' => $this->configuration['mode'],
+        '#required' => TRUE,
+        '#weight' => -10,
+        '#attributes' => ['id' => 'edit-mode'],
+      ];
+    }
 
     $form['server_livenet'] = [
       '#type' => 'textfield',
@@ -137,7 +201,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#default_value' => $this->configuration['server_livenet'],
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live'],
+          ':input[id="edit-mode"]' => ['value' => 'live'],
         ],
       ],
     ];
@@ -149,7 +213,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#default_value' => $this->configuration['pairing_code_livenet'],
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live'],
+          ':input[id="edit-mode"]' => ['value' => 'live'],
         ],
       ],
     ];
@@ -160,7 +224,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#description' => $this->configuration['token_livenet'] ? $this->t('Configured') : $this->t('Not configured'),
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'live'],
+          ':input[id="edit-mode"]' => ['value' => 'live'],
         ],
       ],
     ];
@@ -172,7 +236,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#default_value' => $this->configuration['server_testnet'],
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test'],
+          ':input[id="edit-mode"]' => ['value' => 'test'],
         ],
       ],
     ];
@@ -184,7 +248,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#default_value' => $this->configuration['pairing_code_testnet'],
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test'],
+          ':input[id="edit-mode"]' => ['value' => 'test'],
         ],
       ],
     ];
@@ -195,7 +259,7 @@ class BtcPay extends OffsitePaymentGatewayBase {
       '#description' => $this->configuration['token_testnet'] ? $this->t('Configured') : $this->t('Not configured'),
       '#states' => [
         'visible' => [
-          ':input[name="configuration[btcpay_redirect][mode]"]' => ['value' => 'test'],
+          ':input[id="edit-mode"]' => ['value' => 'test'],
         ],
       ],
     ];
