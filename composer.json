@@ -8,7 +8,7 @@
     "source": "https://github.com/btcpayserver/commerce_btcpay"
   },
   "require": {
-    "ndeet/php-bitpay-client-legacy": "^6.0"
+    "btcpayserver/btcpayserver-greenfield-php": "^2.8"
   },
   "minimum-stability": "dev"
 }

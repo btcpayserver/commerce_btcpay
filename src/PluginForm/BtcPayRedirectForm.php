@@ -5,7 +5,11 @@ namespace Drupal\commerce_btcpay\PluginForm;
 use Drupal\commerce_payment\Exception\PaymentGatewayException;
 use Drupal\commerce_payment\PluginForm\PaymentOffsiteForm as BasePaymentOffsiteForm;
 use Drupal\Core\Form\FormStateInterface;
+use Symfony\Component\HttpFoundation\RedirectResponse;
 
+/**
+ * Provides the off-site payment form for BTCPay.
+ */
 class BtcPayRedirectForm extends BasePaymentOffsiteForm {
 
   /**
@@ -13,6 +17,8 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
    */
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
     $form = parent::buildConfigurationForm($form, $form_state);
+    
+    \Drupal::messenger()->addMessage('BTCPay redirect form is being built...', 'status');
 
     /** @var \Drupal\commerce_payment\Entity\PaymentInterface $payment */
     $payment = $this->entity;
@@ -23,57 +29,49 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
     /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
     $order = $payment->getOrder();
 
-    // Simulate an API call failing and throwing an exception, for test purposes.
-    // See PaymentCheckoutTest::testFailedCheckoutWithOffsiteRedirectGet().
-    if ($order->getBillingProfile() && $order->getBillingProfile()->get('address')->family_name == 'TRIGGER FAIL') {
-      throw new PaymentGatewayException('Could not get the redirect URL.');
-    }
-
-    // Create the invoice (payment request) on the BTCPay server.
+    // Create the invoice on BTCPay Server.
     $options = [
       'return_url' => $form['#return_url'],
       'cancel_url' => $form['#cancel_url'],
     ];
 
-    /** @var \Bitpay\Invoice $btcPayInvoice **/
-    if (! $btcPayInvoice = $payment_gateway_plugin->createInvoice($order, $options)) {
-      $this->redirectToPreviousStep();
+    $invoice = $payment_gateway_plugin->createInvoice($order, $options);
+    
+    if (!$invoice) {
+      throw new PaymentGatewayException('Failed to create invoice on BTCPay Server.');
     }
 
-    // Store the remote invoice data on the order.
+    // Store invoice data on the order and payment.
+    $invoice_data = $invoice->getData();
     $order->setData('btcpay', [
-      'invoice_id' => $btcPayInvoice->getId(),
-      'expiration_time' => $btcPayInvoice->getExpirationTime()->getTimestamp(),
-      'status' => $btcPayInvoice->getStatus(),
+      'invoice_id' => $invoice_data['id'],
+      'checkout_link' => $invoice_data['checkoutLink'],
+      'status' => $invoice_data['status'],
+      'created_time' => $invoice_data['createdTime'] ?? time(),
     ]);
     $order->save();
+    
+    // Update the payment with the remote ID.
+    $payment->setRemoteId($invoice_data['id']);
+    $payment->setRemoteState($invoice_data['status']);
+    $payment->save();
 
-    // Redirect url from payment provider.
-    $redirect_url = $btcPayInvoice->getUrl();
+    // Get the checkout URL.
+    $redirect_url = $invoice_data['checkoutLink'];
+    
+    \Drupal::logger('commerce_btcpay')->info('Redirecting to BTCPay checkout: @url', [
+      '@url' => $redirect_url,
+    ]);
 
-    $data = [];
-
-    return $this->buildRedirectForm($form, $form_state, $redirect_url, $data);
-  }
-
-  /**
-   * Redirects to a previous checkout step on error.
-   *
-   * @throws \Drupal\commerce\Response\NeedsRedirectException
-   */
-  protected function redirectToPreviousStep() {
-    /** @var \Drupal\commerce_payment\Entity\PaymentInterface $payment */
-    $payment = $this->entity;
-
-    /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
-    $order = $payment->getOrder();
-
-    /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
-    $checkout_flow = $order->get('checkout_flow')->entity;
-    /** @var \Drupal\commerce_checkout\Plugin\Commerce\CheckoutFlow\CheckoutFlowWithPanesInterface $checkout_flow_plugin */
-    $checkout_flow_plugin = $checkout_flow->getPlugin();
-    $step_id = $checkout_flow_plugin->getPane('payment_information')->getStepId();
-    return $checkout_flow_plugin->redirectToStep($step_id);
+    // Use buildRedirectForm to create the redirect.
+    // For GET redirects, we pass the URL and empty data array.
+    return $this->buildRedirectForm(
+      $form,
+      $form_state,
+      $redirect_url,
+      [],
+      self::REDIRECT_GET
+    );
   }
 
 }

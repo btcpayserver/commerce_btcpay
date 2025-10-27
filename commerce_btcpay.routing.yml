@@ -1,0 +1,7 @@
+commerce_btcpay.notify:
+  path: '/payment/notify/{commerce_payment_gateway}'
+  defaults:
+    _controller: '\Drupal\commerce_payment\Controller\PaymentNotificationController::notifyPage'
+  methods: [POST]
+  requirements:
+    _access: 'TRUE'

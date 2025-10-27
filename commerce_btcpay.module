@@ -1,0 +1,16 @@
+<?php
+
+/**
+ * @file
+ * Contains commerce_btcpay.module.
+ */
+
+/**
+ * Implements hook_entity_type_alter().
+ */
+function commerce_btcpay_entity_type_alter(array &$entity_types) {
+  // Use custom storage to fix payment gateway loading issue in Commerce core.
+  if (isset($entity_types['commerce_payment'])) {
+    $entity_types['commerce_payment']->setStorageClass('Drupal\commerce_btcpay\BtcPayPaymentStorage');
+  }
+}

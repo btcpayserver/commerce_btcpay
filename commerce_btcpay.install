@@ -1,19 +1,48 @@
 <?php
 
 /**
+ * @file
+ * Install, update and uninstall functions for the Commerce BTCPay module.
+ */
+
+/**
  * Implements hook_requirements().
  */
 function commerce_btcpay_requirements($phase) {
   $requirements = [];
   if ($phase == 'install') {
-    if (!class_exists('\Bitpay\Client\Client')) {
+    if (!class_exists('\BTCPayServer\Client\Store')) {
       $requirements['commerce_btcpay_requirement'] = [
-        'title' => t('BitPay php-client library missing.'),
-        'description' => t('Commerce BTCPay requires the BitPay php-client library: https://packagist.org/packages/bitpay/php-client which is installed automatically if you use Composer.'),
+        'title' => t('BTCPay PHP library missing.'),
+        'description' => t('Commerce BTCPay requires the BTCPay PHP client library: https://packagist.org/packages/btcpayserver/btcpayserver-greenfield-php which is installed automatically if you use Composer.'),
         'severity' => REQUIREMENT_ERROR,
       ];
     }
   }
 
   return $requirements;
+}
+
+/**
+ * Fix payment gateway configuration for offsite payment gateways.
+ */
+function commerce_btcpay_update_8001() {
+  $config_factory = \Drupal::configFactory();
+  
+  // Load all payment gateway configurations.
+  foreach ($config_factory->listAll('commerce_payment.commerce_payment_gateway.') as $config_name) {
+    $config = $config_factory->getEditable($config_name);
+    
+    // Check if this is a BTCPay gateway.
+    if ($config->get('plugin') === 'btcpay_redirect') {
+      // Update the configuration.
+      $config->set('configuration.collect_billing_information', FALSE);
+      $config->set('configuration.payment_method_types', []);
+      $config->save();
+      
+      \Drupal::messenger()->addMessage(t('Updated BTCPay payment gateway configuration: @name', [
+        '@name' => $config->get('label'),
+      ]));
+    }
+  }
 }

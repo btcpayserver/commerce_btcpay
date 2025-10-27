@@ -1,15 +1,15 @@
-commerce_payment.commerce_payment_gateway.plugin.btcpay:
+commerce_payment.commerce_payment_gateway.plugin.btcpay_redirect:
   type: commerce_payment_gateway_configuration
   mapping:
-    pairing_code_livenet:
+    server_url:
       type: string
-      label: "Livenet pairing code"
-    pairing_code_testnet:
+      label: "BTCPay Server URL"
+    api_key:
       type: string
-      label: "Testnet pairing code"
-    server_livenet:
+      label: "API Key"
+    store_id:
       type: string
-      label: "Livenet server URL"
-    server_testnet:
+      label: "Store ID"
+    webhook_secret:
       type: string
-      label: "Testnet server URL"
+      label: "Webhook Secret"
