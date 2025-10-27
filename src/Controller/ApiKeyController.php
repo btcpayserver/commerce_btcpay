@@ -97,6 +97,34 @@ class ApiKeyController extends ControllerBase {
     $gateway->save();
     
     $gateway_name = $gateway->label();
+    
+    // Setup webhook
+    $plugin = $gateway->getPlugin();
+    $webhook_setup = FALSE;
+    $webhook_message = '';
+    if (method_exists($plugin, 'setupWebhook')) {
+      try {
+        // Use reflection to call the protected method
+        $reflection = new \ReflectionClass($plugin);
+        $method = $reflection->getMethod('setupWebhook');
+        $method->setAccessible(TRUE);
+        // Pass the gateway ID as parameter
+        $webhook_setup = $method->invoke($plugin, $gateway_id);
+        
+        if ($webhook_setup) {
+          // Save the configuration again to store the webhook secret and webhook ID
+          $gateway->setPluginConfiguration($plugin->getConfiguration());
+          $gateway->save();
+          $webhook_message = 'Webhook configured successfully.';
+        }
+        else {
+          $webhook_message = 'Could not configure webhook automatically.';
+        }
+      }
+      catch (\Exception $e) {
+        $webhook_message = 'Error setting up webhook: ' . $e->getMessage();
+      }
+    }
 
     // Show success page
     $settings_url = Url::fromRoute('entity.commerce_payment_gateway.collection')->toString();
@@ -113,6 +141,7 @@ class ApiKeyController extends ControllerBase {
             <p style="margin: 5px 0;"><strong>Server URL:</strong> @server_url</p>
             <p style="margin: 5px 0;"><strong>Store ID:</strong> @store_id</p>
             <p style="margin: 5px 0;"><strong>API Key:</strong> @api_key_preview</p>
+            <p style="margin: 5px 0;"><strong>Webhook:</strong> @webhook_status</p>
           </div>
           <p style="margin-top: 30px;">
             <a href="@settings_url" style="display: inline-block; padding: 12px 24px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">
@@ -125,6 +154,7 @@ class ApiKeyController extends ControllerBase {
         '@server_url' => $server_url,
         '@store_id' => $store_id,
         '@api_key_preview' => substr($api_key, 0, 20) . '...',
+        '@webhook_status' => $webhook_message,
         '@settings_url' => $settings_url,
       ]),
     ];

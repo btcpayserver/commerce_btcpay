@@ -13,3 +13,6 @@ commerce_payment.commerce_payment_gateway.plugin.btcpay_redirect:
     webhook_secret:
       type: string
       label: "Webhook Secret"
+    webhook_id:
+      type: string
+      label: "Webhook ID"

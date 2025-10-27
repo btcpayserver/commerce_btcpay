@@ -186,6 +186,130 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
       // Ensure offsite gateway settings are correct.
       $this->configuration['collect_billing_information'] = FALSE;
       $this->configuration['payment_method_types'] = [];
+      
+      // Setup webhook after saving configuration
+      // Get the gateway entity ID from the form state
+      $gateway = $form_state->getFormObject()->getEntity();
+      $gateway_id = $gateway->id();
+      
+      if ($this->setupWebhook($gateway_id)) {
+        \Drupal::messenger()->addStatus($this->t('Webhook configured successfully.'));
+      }
+      else {
+        \Drupal::messenger()->addWarning($this->t('Could not configure webhook. Please check the logs.'));
+      }
+    }
+  }
+
+  /**
+   * Sets up or updates the webhook for this payment gateway.
+   * 
+   * @param string|null $gateway_id
+   *   The payment gateway entity ID. If not provided, will try to get from entityId.
+   * 
+   * @return bool
+   *   TRUE if webhook was set up successfully, FALSE otherwise.
+   */
+  protected function setupWebhook($gateway_id = NULL) {
+    // Get the gateway ID from parameter or from the entity
+    if (!$gateway_id) {
+      $gateway_id = $this->entityId ?? NULL;
+    }
+    
+    if (!$gateway_id) {
+      $this->logger->error('Cannot setup webhook: gateway ID not available.');
+      return FALSE;
+    }
+    if (empty($this->configuration['server_url']) || empty($this->configuration['api_key']) || empty($this->configuration['store_id'])) {
+      $this->logger->error('Cannot setup webhook: missing configuration.');
+      return FALSE;
+    }
+
+    try {
+      $webhook_client = new \BTCPayServer\Client\Webhook(
+        $this->configuration['server_url'],
+        $this->configuration['api_key']
+      );
+
+      // Build the webhook URL
+      $webhook_url = \Drupal\Core\Url::fromRoute('commerce_btcpay.notify', [
+        'commerce_payment_gateway' => $gateway_id,
+      ], ['absolute' => TRUE])->toString();
+
+      // Check if we have a stored webhook ID
+      $webhook_id = $this->configuration['webhook_id'] ?? NULL;
+      
+      // Verify the webhook still exists on BTCPay Server
+      if ($webhook_id) {
+        try {
+          $webhook_client->getWebhook($this->configuration['store_id'], $webhook_id);
+          $this->logger->info('Using stored webhook ID: @id', ['@id' => $webhook_id]);
+        }
+        catch (\Exception $e) {
+          // Webhook doesn't exist anymore, we'll create a new one
+          $this->logger->warning('Stored webhook @id not found, will create new one', ['@id' => $webhook_id]);
+          $webhook_id = NULL;
+        }
+      }
+
+      // Generate or reuse webhook secret
+      if (empty($this->configuration['webhook_secret'])) {
+        $this->configuration['webhook_secret'] = bin2hex(random_bytes(32));
+      }
+
+      // Specific events we want to listen to
+      $specific_events = [
+        'InvoiceReceivedPayment',
+        'InvoiceProcessing',
+        'InvoiceExpired',
+        'InvoiceSettled',
+        'InvoiceInvalid',
+        'InvoicePaymentSettled',
+      ];
+
+      if ($webhook_id) {
+        // Update existing webhook
+        $webhook_client->updateWebhook(
+          $this->configuration['store_id'],
+          $webhook_url,
+          $webhook_id,
+          $specific_events,
+          TRUE, // enabled
+          TRUE, // automaticRedelivery
+          $this->configuration['webhook_secret']
+        );
+        $this->logger->info('Updated webhook @id for store @store', [
+          '@id' => $webhook_id,
+          '@store' => $this->configuration['store_id'],
+        ]);
+      }
+      else {
+        // Create new webhook
+        $result = $webhook_client->createWebhook(
+          $this->configuration['store_id'],
+          $webhook_url,
+          $specific_events,
+          $this->configuration['webhook_secret'],
+          TRUE, // enabled
+          TRUE  // automaticRedelivery
+        );
+        
+        // Store the webhook ID for future updates
+        $this->configuration['webhook_id'] = $result->getData()['id'];
+        
+        $this->logger->info('Created webhook @id for store @store', [
+          '@id' => $this->configuration['webhook_id'],
+          '@store' => $this->configuration['store_id'],
+        ]);
+      }
+
+      return TRUE;
+    }
+    catch (\Exception $e) {
+      $this->logger->error('Error setting up webhook: @error', [
+        '@error' => $e->getMessage(),
+      ]);
+      return FALSE;
     }
   }
 
