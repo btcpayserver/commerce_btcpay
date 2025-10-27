@@ -11,12 +11,12 @@ use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\OffsitePaymentGateway
 interface BtcPayInterface extends OffsitePaymentGatewayInterface {
 
   /**
-   * Gets the BTCPay Greenfield API client.
+   * Gets the BTCPay Greenfield API invoice client.
    *
    * @return \BTCPayServer\Client\Invoice|null
    *   Returns the invoice client or NULL.
    */
-  public function getApiClient();
+  public function getInvoiceClient();
 
   /**
    * Creates an invoice on BTCPay server.

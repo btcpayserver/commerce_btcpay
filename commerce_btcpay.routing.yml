@@ -5,3 +5,19 @@ commerce_btcpay.notify:
   methods: [POST]
   requirements:
     _access: 'TRUE'
+
+commerce_btcpay.api_key_callback:
+  path: '/btcpay/api-key-callback'
+  defaults:
+    _controller: '\Drupal\commerce_btcpay\Controller\ApiKeyController::apiKeyCallback'
+  methods: [GET, POST]
+  requirements:
+    _access: 'TRUE'
+
+commerce_btcpay.api_key_success:
+  path: '/btcpay/api-key-success'
+  defaults:
+    _controller: '\Drupal\commerce_btcpay\Controller\ApiKeyController::apiKeySuccess'
+    _title: 'BTCPay API Key Authorization Success'
+  requirements:
+    _access: 'TRUE'

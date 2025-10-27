@@ -104,6 +104,16 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
     $form = parent::buildConfigurationForm($form, $form_state);
 
+    // Attach the API key redirect JavaScript library.
+    $form['#attached']['library'][] = 'commerce_btcpay/api_key_redirect';
+    
+    // Get the payment gateway entity ID from the form state
+    $gateway = $form_state->getFormObject()->getEntity();
+    $gateway_id = $gateway->id();
+    
+    // Pass the gateway entity ID to JavaScript
+    $form['#attached']['drupalSettings']['commerce_btcpay']['gateway_id'] = $gateway_id;
+
     // Hide fields not applicable to offsite payment gateways.
     $form['mode']['#access'] = FALSE;
     // For offsite gateways, we don't collect billing information or payment methods.
@@ -119,15 +129,25 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
     $form['server_url'] = [
       '#type' => 'url',
       '#title' => $this->t('BTCPay Server URL'),
-      '#description' => $this->t('Enter your BTCPay Server URL (e.g., https://btcpay.example.com)'),
+      '#description' => $this->t('Enter your BTCPay Server URL (e.g., https://btcpay.example.com). Note: .local domains only work on your local network.'),
       '#default_value' => $this->configuration['server_url'] ?? '',
       '#required' => TRUE,
+    ];
+
+    $form['generate_api_key'] = [
+      '#type' => 'button',
+      '#value' => $this->t('Generate API Key'),
+      '#attributes' => [
+        'class' => ['btcpay-generate-api-key', 'button', 'button--primary'],
+      ],
+      '#prefix' => '<div class="form-item">',
+      '#suffix' => '<div class="description">' . $this->t('Click this button to automatically generate an API key with the correct permissions. You will be redirected to your BTCPay Server to authorize the connection.') . '</div></div>',
     ];
 
     $form['store_id'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Store ID'),
-      '#description' => $this->t('Your BTCPay Server Store ID. Found in Store Settings.'),
+      '#description' => $this->t('Your BTCPay Server Store ID. This will be automatically filled when you generate an API key.'),
       '#default_value' => $this->configuration['store_id'] ?? '',
       '#required' => TRUE,
     ];
@@ -135,7 +155,7 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
     $form['api_key'] = [
       '#type' => 'textfield',
       '#title' => $this->t('API Key'),
-      '#description' => $this->t('Generate an API key in BTCPay Server under Account > Manage Account > API Keys. Required permissions: View invoices, Create invoice, Modify invoices, Modify stores webhooks.'),
+      '#description' => $this->t('Your BTCPay Server API Key. This will be automatically filled when you generate an API key, or you can manually enter one from BTCPay Server under Account > Manage Account > API Keys. Required permissions: View invoices, Create invoice, Modify invoices, Modify stores webhooks.'),
       '#default_value' => $this->configuration['api_key'] ?? '',
       '#required' => TRUE,
     ];
@@ -172,7 +192,7 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
   /**
    * {@inheritdoc}
    */
-  public function getApiClient() {
+  public function getInvoiceClient() {
     if (empty($this->configuration['server_url']) || empty($this->configuration['api_key'])) {
       $this->logger->error('BTCPay Server URL or API Key not configured.');
       return NULL;
@@ -194,7 +214,7 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
    * {@inheritdoc}
    */
   public function createInvoice(OrderInterface $order, array $options = []) {
-    $client = $this->getApiClient();
+    $client = $this->getInvoiceClient();
     if (!$client) {
       throw new PaymentGatewayException('Could not initialize BTCPay API client.');
     }
@@ -256,7 +276,7 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
    * {@inheritdoc}
    */
   public function getInvoice(string $invoiceId) {
-    $client = $this->getApiClient();
+    $client = $this->getInvoiceClient();
     if (!$client) {
       return NULL;
     }

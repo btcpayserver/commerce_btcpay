@@ -18,7 +18,7 @@ class BtcPayRedirectForm extends BasePaymentOffsiteForm {
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
     $form = parent::buildConfigurationForm($form, $form_state);
     
-    \Drupal::messenger()->addMessage('BTCPay redirect form is being built...', 'status');
+    #\Drupal::messenger()->addMessage('BTCPay redirect form is being built...', 'status');
 
     /** @var \Drupal\commerce_payment\Entity\PaymentInterface $payment */
     $payment = $this->entity;
