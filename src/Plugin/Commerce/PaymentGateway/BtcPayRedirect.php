@@ -82,6 +82,13 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
       $container->get('logger.factory')->get('commerce_btcpay')
     );
   }
+  
+  /**
+   * {@inheritdoc}
+   */
+  public function getMode() {
+    return null;
+  }
 
   /**
    * {@inheritdoc}
@@ -92,6 +99,7 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
       'api_key' => '',
       'store_id' => '',
       'webhook_secret' => '',
+      'webhook_id' => '',
       'debug_mode' => FALSE,
       // Offsite gateways don't collect billing information or payment methods.
       'collect_billing_information' => FALSE,
@@ -207,6 +215,14 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
       else {
         \Drupal::messenger()->addWarning($this->t('Could not configure webhook. Please check the logs.'));
       }
+
+      // Persist the webhook_id and any configuration changes made during
+      // setupWebhook() to the payment gateway entity immediately.
+      // In the settings form context, ensure we save the configuration.
+      if ($gateway && method_exists($gateway, 'setPluginConfiguration')) {
+        $gateway->setPluginConfiguration($this->getConfiguration());
+        $gateway->save();
+      }
     }
   }
 
@@ -247,21 +263,52 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
 
       // Check if we have a stored webhook ID
       $webhook_id = $this->configuration['webhook_id'] ?? NULL;
-      
-      // Verify the webhook still exists on BTCPay Server
+
+      // Verify the stored webhook exists; otherwise, clear it so we can search by URL.
       if ($webhook_id) {
         try {
           $webhook_client->getWebhook($this->configuration['store_id'], $webhook_id);
-          $this->logger->info('Using stored webhook ID: @id', ['@id' => $webhook_id]);
+          if ($this->configuration['debug_mode'] ?? FALSE) {
+            $this->logger->info('Using stored webhook ID: @id', ['@id' => $webhook_id]);
+          }
         }
-        catch (\Exception $e) {
-          // Webhook doesn't exist anymore, we'll create a new one
-          $this->logger->warning('Stored webhook @id not found, will create new one', ['@id' => $webhook_id]);
+        catch (\Throwable $e) {
+          // Webhook doesn't exist anymore, reset and try to find by URL.
+          if ($this->configuration['debug_mode'] ?? FALSE) {
+            $this->logger->warning('Stored webhook @id not found on server, will search by URL.', ['@id' => $webhook_id]);
+          }
           $webhook_id = NULL;
         }
       }
 
-      // Generate or reuse webhook secret
+      // If we don't have a valid webhook ID, try to find an existing webhook by URL.
+      if (!$webhook_id) {
+        try {
+          // Use getStoreWebhooks() which returns a WebhookList object
+          $webhook_list = $webhook_client->getStoreWebhooks($this->configuration['store_id']);
+          $existing_webhooks = $webhook_list->all(); // Returns array of Webhook result objects
+          
+          foreach ($existing_webhooks as $existing_webhook) {
+            // Webhook result object has getUrl() and getId() methods
+            $existing_url = $existing_webhook->getUrl();
+            if ($existing_url === $webhook_url) {
+              $webhook_id = $existing_webhook->getId();
+              if ($this->configuration['debug_mode'] ?? FALSE) {
+                $this->logger->info('Found existing webhook by URL with ID @id', ['@id' => $this->safeLogValue($webhook_id)]);
+              }
+              break;
+            }
+          }
+        }
+        catch (\Throwable $e) {
+          // Non-fatal: If listing webhooks fails, we'll fall back to creating one.
+          if ($this->configuration['debug_mode'] ?? FALSE) {
+            $this->logger->warning('Could not list existing webhooks: @error', ['@error' => $e->getMessage()]);
+          }
+        }
+      }
+
+      // Ensure we have a webhook secret
       if (empty($this->configuration['webhook_secret'])) {
         $this->configuration['webhook_secret'] = bin2hex(random_bytes(32));
       }
@@ -269,15 +316,15 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
       // Specific events we want to listen to
       $specific_events = [
         'InvoiceReceivedPayment',
+        'InvoicePaymentSettled',
         'InvoiceProcessing',
         'InvoiceExpired',
         'InvoiceSettled',
         'InvoiceInvalid',
-        'InvoicePaymentSettled',
       ];
 
       if ($webhook_id) {
-        // Update existing webhook
+        // Update existing webhook.
         $webhook_client->updateWebhook(
           $this->configuration['store_id'],
           $webhook_url,
@@ -287,13 +334,17 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
           TRUE, // automaticRedelivery
           $this->configuration['webhook_secret']
         );
-        $this->logger->info('Updated webhook @id for store @store', [
-          '@id' => $webhook_id,
-          '@store' => $this->configuration['store_id'],
-        ]);
+        if ($this->configuration['debug_mode'] ?? FALSE) {
+          $this->logger->info('Updated webhook @id for store @store', [
+            '@id' => $webhook_id,
+            '@store' => $this->configuration['store_id'],
+          ]);
+        }
+        // Persist the ID to config to be safe.
+        $this->configuration['webhook_id'] = $webhook_id;
       }
       else {
-        // Create new webhook
+        // Create new webhook.
         $result = $webhook_client->createWebhook(
           $this->configuration['store_id'],
           $webhook_url,
@@ -302,14 +353,17 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
           TRUE, // enabled
           TRUE  // automaticRedelivery
         );
-        
+
         // Store the webhook ID for future updates
-        $this->configuration['webhook_id'] = $result->getData()['id'];
-        
-        $this->logger->info('Created webhook @id for store @store', [
-          '@id' => $this->configuration['webhook_id'],
-          '@store' => $this->configuration['store_id'],
-        ]);
+        $data = is_object($result) && method_exists($result, 'getData') ? $result->getData() : (array) $result;
+        $this->configuration['webhook_id'] = $data['id'] ?? NULL;
+
+        if ($this->configuration['debug_mode'] ?? FALSE) {
+          $this->logger->info('Created webhook @id for store @store', [
+            '@id' => $this->safeLogValue($this->configuration['webhook_id']),
+            '@store' => $this->configuration['store_id'],
+          ]);
+        }
       }
 
       return TRUE;
