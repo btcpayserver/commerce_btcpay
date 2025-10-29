@@ -16,3 +16,6 @@ commerce_payment.commerce_payment_gateway.plugin.btcpay_redirect:
     webhook_id:
       type: string
       label: "Webhook ID"
+    debug_mode:
+      type: boolean
+      label: "Debug Mode"
