@@ -1,6 +1,6 @@
 # Accept Bitcoin on your Drupal Commerce Store using BTCPay Server
 
-Introducing BTCPay Server payment module for [Drupal Commerce 2.x](https://www.drupal.org/project/commerce). Drupal Commerce Store owners can now accept payments using Bitcoin and other cryptocurrencies directly through BTCPay Server without any third-party intermediary.
+Introducing BTCPay Server payment module for [Drupal Commerce 2.x or 3.x](https://www.drupal.org/project/commerce). Drupal Commerce Store owners can now accept payments using Bitcoin and other cryptocurrencies directly through BTCPay Server without any third-party intermediary.
 
 BTCPay Server supports a wide range of cryptocurrencies, with the potential for future extensions. Here are the currencies you can use now on BTCPay Server:
 
@@ -18,8 +18,12 @@ A Drupal Commerce demo store connected with a (testnet) BTCPay Server where you 
 ## Requirements
 
 * BTCPay Server ([self hosted or 3rd party](https://docs.btcpayserver.org/deployment/deployment) or [quick start with a testserver](https://docs.btcpayserver.org/btcpay-basics/tryitout))
-* Drupal Commerce 2.x installed ([installation guide](https://docs.drupalcommerce.org/commerce2/developer-guide/install-update/installation))  
-* Drupal: [configured and writable private file system](https://www.drupal.org/docs/8/core/modules/file/overview#content-accessing-private-files)
+* Drupal Commerce 2.x or 3.x installed ([installation guide](https://docs.drupalcommerce.org/commerce2/developer-guide/install-update/installation))  
+
+## Upgrading
+
+As of version 3.x of this module it uses the BTCPay Server Greenfield API which is much more powerful and allows more features. Version 3.x is a breaking change and also new libraries and API tokens are used. So please uninstall old versions (1.x and 2.x) before you install the latest 3.x release. And follow the setup instructions below.
+
 
 ## Installation and configuration Guide for the BTCPay Server - Drupal Commerce Integration
 
@@ -31,28 +35,21 @@ Ready to accept Bitcoin on your Drupal Commerce Store? Follow this quick and eas
 ### Easy setup steps
 
 #### Generate pairing code on BTCPay server
-1.  **Setup your store:** You'd need a BTCPay server instance to get started. Don't have one? click [here](https://docs.btcpayserver.org/RegisterAccount/) for a step by step guide.
-2.  **Access Tokens:** Once you have your BTCPay Server instance setup and store created, navigate to the store settings and select "**Access Tokens**"
-3.  Create a new token by clicking on **[Create a new token]**
-4.  **Label:** enter some label (eg. my store)
-5.  **Public key:** this needs to be left **empty**
-6.  **Facade:** Type in "merchant"
-7.  Click on **[Request pairing]**
-8.  On the next screen choose your configured store in ** Pair to** select dropdown and click on **[approve]**
-9.  Note down the displayed 7-digit code at the top status message, e.g. "d7afaXr"   
- (you will need that code below on gateway configuration, see below)
+1.  **Setup your store:** You'd need a BTCPay server instance to get started. Don't have one? click [here](https://docs.btcpayserver.org/RegisterAccount/) for a step-by-step guide.
+2.  Make sure you have setup at least Bitcoin or Lightning wallet.
 
 #### Commerce BTCPay: Installation + configuration
-1.  Install module: `composer require drupal/commerce_btcpay`
-2.  Enable the module: `drush en commerce_btcpay -y`
-3.  Make sure you have configured [private file system](https://www.drupal.org/docs/8/core/modules/file/overview#content-accessing-private-files) (needed to store encrypted public+private key)
-4.  Commerce BTCPay configuration (**Commerce -> Configuration -> Payment -> Payment gateways**): 
-5.  Add payment method "BTCPay"
-    * **Mode**: Test or Live (you can configure both individually)
-    * **Test/Live server host**: enter your URL without https:// prefix e.g. btcpay.yourserver.com (Note - valid SSL certificate needed)
-    * **Test/Live Paring code**: enter the 7-digit pairing code from BTCPay "Access tokens" page
-    * Click **Save** to finalize the setup.  
-      You should see a message that the tokens were successfully created.
+1. Install module: `composer require drupal/commerce_btcpay`
+2. Enable the module: `drush en commerce_btcpay -y`
+3. Go to Commerce BTCPay configuration (**Commerce -> Configuration -> Payment -> Payment gateways**): 
+5. Click on **[Add payment gateway]**
+6. Enter the BTCPay Server URL (e.g. https://btcpay.yourdomain.tld). (This is where you created your store, see requirements for how to setup a BTCPay Server.)
+7. You can now click **Generate API Key** and you will get redirected to BTCPay Server authorization page.
+8. Select the store you want to connect to and click **[Continue]**
+9. On the next screen enter a label e.g. "Drupal 11 store".
+10. At the bottom click **[Authorize app]**
+11. You will get redirected to your Drupal Commerce store and you should see that the store id, API key and webhook was saved.
+12. Done, you can now test the payment gateway.
 
 ## Status
 **This module is currently in alpha stage but has proven stable without issues.**    
@@ -62,13 +59,7 @@ Future updates and releases will be available on the [project page on drupal.org
 >[BTCPay Server](https://btcpayserver.org/) is a self-hosted, open-source cryptocurrency payment processor know for its security, privacy, and censorship resistance.
 
 It's free to use and allows you to become your own payment processor. 
-**To get a full overview check out our [documentation](https://docs.btcpayserver.org).**
-
-## Compatible with BitPay API
-BTCPay was created to be an alternative to 3rd party payment provider [BitPay](https://bitpay.com). Therefore, BTCPay is invoice API compatible and you can use this payment plugin also with the official BitPay API and sites. The power of BTCPay is that you can become your own payment provider. 
-
-Teaser: future versions of this plugin will be based on the BTCPay Server Greenfield API which is much more powerful and allows more features.
-
+**To get a full overview, check out our [documentation](https://docs.btcpayserver.org).**
 
 ## Get Support
 You can open an issue on our [Github repository](https://github.com/btcpayserver/commerce_btcpay/issues) or reach us on [Telegram](https://t.me/btcpayserver) or [Mattermost chat](http://chat.btcpayserver.org/)
