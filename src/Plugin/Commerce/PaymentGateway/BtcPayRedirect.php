@@ -111,6 +111,9 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
    * {@inheritdoc}
    */
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
+    // Ensure configuration has default values before calling parent.
+    $this->configuration += $this->defaultConfiguration();
+    
     $form = parent::buildConfigurationForm($form, $form_state);
 
     // Attach the API key redirect JavaScript library.

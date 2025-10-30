@@ -46,29 +46,28 @@ class ApiKeyController extends ControllerBase {
       ];
     }
 
-    if (empty($gateway_id)) {
-      return [
-        '#markup' => $this->t('<h1>Missing Gateway ID</h1><p>Payment gateway ID is missing. Please try again from the payment gateway configuration page.</p>'),
-      ];
-    }
-
-    // Load the gateway to get the server URL
-    $gateway_storage = \Drupal::entityTypeManager()->getStorage('commerce_payment_gateway');
-    $gateway = $gateway_storage->load($gateway_id);
+    // If gateway_id is provided, load the gateway and get server URL from it
+    $server_url = '';
+    $gateway = NULL;
     
-    if (!$gateway) {
-      return [
-        '#markup' => $this->t('<h1>Gateway Not Found</h1><p>Payment gateway "@id" not found.</p>', ['@id' => $gateway_id]),
-      ];
+    if (!empty($gateway_id)) {
+      $gateway_storage = \Drupal::entityTypeManager()->getStorage('commerce_payment_gateway');
+      $gateway = $gateway_storage->load($gateway_id);
+      
+      if ($gateway) {
+        $configuration = $gateway->getPluginConfiguration();
+        $server_url = $configuration['server_url'] ?? '';
+      }
     }
-
-    // Get server URL from gateway configuration
-    $configuration = $gateway->getPluginConfiguration();
-    $server_url = $configuration['server_url'] ?? '';
+    
+    // If no server URL from gateway, try to get it from the request (stored by JS)
+    if (empty($server_url)) {
+      $server_url = $request->request->get('server_url') ?: $request->query->get('server_url');
+    }
     
     if (empty($server_url)) {
       return [
-        '#markup' => $this->t('<h1>Missing Server URL</h1><p>Server URL not configured in the payment gateway. Please enter it first.</p>'),
+        '#markup' => $this->t('<h1>Missing Server URL</h1><p>Server URL not found. Please try again from the payment gateway configuration page.</p>'),
       ];
     }
 
@@ -90,74 +89,154 @@ class ApiKeyController extends ControllerBase {
     // Extract store ID from permissions
     $store_id = $this->extractStoreId($permissions);
 
-    // Update the gateway configuration
-    $configuration['api_key'] = $api_key;
-    $configuration['store_id'] = $store_id;
-    $gateway->setPluginConfiguration($configuration);
-    $gateway->save();
-    
-    $gateway_name = $gateway->label();
-    
-    // Setup webhook
-    $plugin = $gateway->getPlugin();
-    $webhook_setup = FALSE;
-    $webhook_message = '';
-    if (method_exists($plugin, 'setupWebhook')) {
-      try {
-        // Use reflection to call the protected method
-        $reflection = new \ReflectionClass($plugin);
-        $method = $reflection->getMethod('setupWebhook');
-        $method->setAccessible(TRUE);
-        // Pass the gateway ID as parameter
-        $webhook_setup = $method->invoke($plugin, $gateway_id);
-        
-        if ($webhook_setup) {
-          // Save the configuration again to store the webhook secret and webhook ID
-          $gateway->setPluginConfiguration($plugin->getConfiguration());
-          $gateway->save();
-          $webhook_message = 'Webhook configured successfully.';
+    // If we have a gateway, update it directly
+    if ($gateway) {
+      $configuration = $gateway->getPluginConfiguration();
+      $configuration['api_key'] = $api_key;
+      $configuration['store_id'] = $store_id;
+      $gateway->setPluginConfiguration($configuration);
+      $gateway->save();
+      
+      $gateway_name = $gateway->label();
+      
+      // Setup webhook
+      $plugin = $gateway->getPlugin();
+      $webhook_setup = FALSE;
+      $webhook_message = '';
+      if (method_exists($plugin, 'setupWebhook')) {
+        try {
+          // Use reflection to call the protected method
+          $reflection = new \ReflectionClass($plugin);
+          $method = $reflection->getMethod('setupWebhook');
+          $method->setAccessible(TRUE);
+          // Pass the gateway ID as parameter
+          $webhook_setup = $method->invoke($plugin, $gateway_id);
+          
+          if ($webhook_setup) {
+            // Save the configuration again to store the webhook secret and webhook ID
+            $gateway->setPluginConfiguration($plugin->getConfiguration());
+            $gateway->save();
+            $webhook_message = 'Webhook configured successfully.';
+          }
+          else {
+            $webhook_message = 'Could not configure webhook automatically.';
+          }
         }
-        else {
-          $webhook_message = 'Could not configure webhook automatically.';
+        catch (\Exception $e) {
+          $webhook_message = 'Error setting up webhook: ' . $e->getMessage();
         }
       }
-      catch (\Exception $e) {
-        $webhook_message = 'Error setting up webhook: ' . $e->getMessage();
-      }
-    }
 
-    // Show success page
-    $settings_url = Url::fromRoute('entity.commerce_payment_gateway.collection')->toString();
-    
-    return [
-      '#markup' => $this->t('
-        <div style="max-width: 800px; margin: 50px auto; padding: 20px; font-family: sans-serif;">
-          <h1 style="color: #28a745;">✓ API Key Generated and Saved Successfully!</h1>
-          <p style="font-size: 16px; line-height: 1.6;">
-            Your BTCPay Server has been authorized and the configuration has been saved.
-          </p>
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-            <p style="margin: 5px 0;"><strong>Gateway:</strong> @gateway_name</p>
-            <p style="margin: 5px 0;"><strong>Server URL:</strong> @server_url</p>
-            <p style="margin: 5px 0;"><strong>Store ID:</strong> @store_id</p>
-            <p style="margin: 5px 0;"><strong>API Key:</strong> @api_key_preview</p>
-            <p style="margin: 5px 0;"><strong>Webhook:</strong> @webhook_status</p>
+      // Show success page for existing gateway
+      $settings_url = Url::fromRoute('entity.commerce_payment_gateway.collection')->toString();
+      
+      return [
+        '#markup' => $this->t('
+          <div style="max-width: 800px; margin: 50px auto; padding: 20px; font-family: sans-serif;">
+            <h1 style="color: #28a745;">✓ API Key Generated and Saved Successfully!</h1>
+            <p style="font-size: 16px; line-height: 1.6;">
+              Your BTCPay Server has been authorized and the configuration has been saved.
+            </p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
+              <p style="margin: 5px 0;"><strong>Gateway:</strong> @gateway_name</p>
+              <p style="margin: 5px 0;"><strong>Server URL:</strong> @server_url</p>
+              <p style="margin: 5px 0;"><strong>Store ID:</strong> @store_id</p>
+              <p style="margin: 5px 0;"><strong>API Key:</strong> @api_key_preview</p>
+              <p style="margin: 5px 0;"><strong>Webhook:</strong> @webhook_status</p>
+            </div>
+            <p style="margin-top: 30px;">
+              <a href="@settings_url" style="display: inline-block; padding: 12px 24px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">
+                Go to Payment Gateways →
+              </a>
+            </p>
           </div>
-          <p style="margin-top: 30px;">
-            <a href="@settings_url" style="display: inline-block; padding: 12px 24px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">
-              Go to Payment Gateway Settings →
-            </a>
-          </p>
-        </div>
-      ', [
-        '@gateway_name' => $gateway_name,
-        '@server_url' => $server_url,
-        '@store_id' => $store_id,
-        '@api_key_preview' => substr($api_key, 0, 20) . '...',
-        '@webhook_status' => $webhook_message,
-        '@settings_url' => $settings_url,
-      ]),
-    ];
+        ', [
+          '@gateway_name' => $gateway_name,
+          '@server_url' => $server_url,
+          '@store_id' => $store_id,
+          '@api_key_preview' => substr($api_key, 0, 20) . '...',
+          '@webhook_status' => $webhook_message,
+          '@settings_url' => $settings_url,
+        ]),
+      ];
+    }
+    else {
+      // No gateway yet - create one automatically with a default name
+      $gateway_storage = \Drupal::entityTypeManager()->getStorage('commerce_payment_gateway');
+      
+      // Create new gateway
+      $gateway = $gateway_storage->create([
+        'id' => 'btcpay',
+        'label' => 'BTCPay Server',
+        'plugin' => 'btcpay_redirect',
+        'configuration' => [
+          'server_url' => $server_url,
+          'api_key' => $api_key,
+          'store_id' => $store_id,
+        ],
+        'status' => TRUE,
+      ]);
+      $gateway->save();
+      
+      $gateway_id = $gateway->id();
+      
+      // Setup webhook
+      $plugin = $gateway->getPlugin();
+      $webhook_setup = FALSE;
+      $webhook_message = '';
+      if (method_exists($plugin, 'setupWebhook')) {
+        try {
+          $reflection = new \ReflectionClass($plugin);
+          $method = $reflection->getMethod('setupWebhook');
+          $method->setAccessible(TRUE);
+          $webhook_setup = $method->invoke($plugin, $gateway_id);
+          
+          if ($webhook_setup) {
+            $gateway->setPluginConfiguration($plugin->getConfiguration());
+            $gateway->save();
+            $webhook_message = 'Webhook configured successfully.';
+          }
+          else {
+            $webhook_message = 'Could not configure webhook automatically.';
+          }
+        }
+        catch (\Exception $e) {
+          $webhook_message = 'Error setting up webhook: ' . $e->getMessage();
+        }
+      }
+      
+      // Show success page
+      $settings_url = Url::fromRoute('entity.commerce_payment_gateway.collection')->toString();
+      
+      return [
+        '#markup' => $this->t('
+          <div style="max-width: 800px; margin: 50px auto; padding: 20px; font-family: sans-serif;">
+            <h1 style="color: #28a745;">✓ Payment Gateway Created Successfully!</h1>
+            <p style="font-size: 16px; line-height: 1.6;">
+              Your BTCPay Server payment gateway has been created and configured automatically.
+            </p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
+              <p style="margin: 5px 0;"><strong>Gateway:</strong> BTCPay Server</p>
+              <p style="margin: 5px 0;"><strong>Server URL:</strong> @server_url</p>
+              <p style="margin: 5px 0;"><strong>Store ID:</strong> @store_id</p>
+              <p style="margin: 5px 0;"><strong>API Key:</strong> @api_key_preview</p>
+              <p style="margin: 5px 0;"><strong>Webhook:</strong> @webhook_status</p>
+            </div>
+            <p style="margin-top: 30px;">
+              <a href="@settings_url" style="display: inline-block; padding: 12px 24px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">
+                Go to Payment Gateways →
+              </a>
+            </p>
+          </div>
+        ', [
+          '@server_url' => $server_url,
+          '@store_id' => $store_id,
+          '@api_key_preview' => substr($api_key, 0, 20) . '...',
+          '@webhook_status' => $webhook_message,
+          '@settings_url' => $settings_url,
+        ]),
+      ];
+    }
   }
 
   /**

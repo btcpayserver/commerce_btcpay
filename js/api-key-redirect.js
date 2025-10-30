@@ -34,18 +34,23 @@
           // Generate a unique token
           const token = 'btcpay_' + Date.now() + '_' + Math.random().toString(36).substring(2, 15);
           
-          // Get the gateway ID from drupalSettings (passed from PHP)
+          // Get the gateway ID from drupalSettings (passed from PHP) - optional for new gateways
           const gatewayId = drupalSettings.commerce_btcpay?.gateway_id || '';
           
           console.log('Gateway ID:', gatewayId);
           
-          if (!gatewayId) {
-            alert(Drupal.t('Could not determine payment gateway ID. Please save the gateway first.'));
-            return;
+          // Store server URL in sessionStorage so we can retrieve it after redirect
+          sessionStorage.setItem('btcpay_temp_server_url', serverUrl);
+          sessionStorage.setItem('btcpay_temp_token', token);
+          if (gatewayId) {
+            sessionStorage.setItem('btcpay_temp_gateway_id', gatewayId);
           }
           
-          // Build the callback URL with token and gateway_id
-          const callbackUrl = window.location.origin + drupalSettings.path.baseUrl + 'btcpay/api-key-callback?token=' + encodeURIComponent(token) + '&gateway_id=' + encodeURIComponent(gatewayId);
+          // Build the callback URL with token, server_url, and optional gateway_id
+          let callbackUrl = window.location.origin + drupalSettings.path.baseUrl + 'btcpay/api-key-callback?token=' + encodeURIComponent(token) + '&server_url=' + encodeURIComponent(serverUrl);
+          if (gatewayId) {
+            callbackUrl += '&gateway_id=' + encodeURIComponent(gatewayId);
+          }
           
           const params = new URLSearchParams();
           REQUIRED_PERMISSIONS.forEach(function(permission) {
