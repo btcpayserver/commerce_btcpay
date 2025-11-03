@@ -11,10 +11,6 @@ BTCPay Server supports a wide range of cryptocurrencies, with the potential for 
 
 Want to accept Bitcoin on your Drupal Commerce store? Visit the [project page on Drupal.org](https://drupal.org/project/commerce_btcpay)
 
-## Demo store
-A Drupal Commerce demo store connected with a (testnet) BTCPay Server where you can try the checkout (Bitcoin + Lightning Network) can be found here:   
-[http://drupal.demo.btcpay.tech](http://drupal.demo.btcpay.tech/)
-
 ## Requirements
 
 * BTCPay Server ([self hosted or 3rd party](https://docs.btcpayserver.org/deployment/deployment) or [quick start with a testserver](https://docs.btcpayserver.org/btcpay-basics/tryitout))
