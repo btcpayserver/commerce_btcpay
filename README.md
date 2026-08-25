@@ -38,14 +38,24 @@ Ready to accept Bitcoin on your Drupal Commerce Store? Follow this quick and eas
 1. Install module: `composer require drupal/commerce_btcpay`
 2. Enable the module: `drush en commerce_btcpay -y`
 3. Go to Commerce BTCPay configuration (**Commerce -> Configuration -> Payment -> Payment gateways**): 
-5. Click on **[Add payment gateway]**
-6. Enter the BTCPay Server URL (e.g. https://btcpay.yourdomain.tld). (This is where you created your store, see requirements for how to setup a BTCPay Server.)
-7. You can now click **Generate API Key** and you will get redirected to BTCPay Server authorization page.
-8. Select the store you want to connect to and click **[Continue]**
-9. On the next screen enter a label e.g. "Drupal 11 store".
-10. At the bottom click **[Authorize app]**
-11. You will get redirected to your Drupal Commerce store and you should see that the store id, API key and webhook was saved.
-12. Done, you can now test the payment gateway.
+5. Click **[Add payment gateway]**, enter its name, machine name, and HTTPS BTCPay Server URL, set its status to **Disabled**, and save it. The API key and Store ID may be blank for this first save.
+6. Edit the saved gateway and click **Generate API Key** to open the BTCPay Server authorization page.
+7. Select the store you want to connect to and click **[Continue]**.
+8. On the next screen enter a label such as "Drupal 11 store".
+9. At the bottom click **[Authorize app]**.
+10. After returning to Drupal, explicitly review and enable the verified gateway, then save it.
+11. Done, you can now test the payment gateway.
+
+### Security notes
+
+API keys and webhook secrets are encrypted in Drupal's non-exportable key/value
+storage. They are intentionally absent from configuration exports and must be
+authorized separately in each environment. Customer email addresses are not
+sent to BTCPay Server unless the gateway's explicit opt-in setting is enabled.
+
+BTCPay Server URLs must use HTTPS. Local development can opt in to HTTP by
+adding `$settings['commerce_btcpay_allow_insecure_http'] = TRUE;` to a local-only
+`settings.php`; never enable that setting in production.
 
 ## Status
 **This module is currently in alpha stage but has proven stable without issues.**    

@@ -28,21 +28,70 @@ function commerce_btcpay_requirements($phase) {
  */
 function commerce_btcpay_update_8001() {
   $config_factory = \Drupal::configFactory();
-  
+
   // Load all payment gateway configurations.
   foreach ($config_factory->listAll('commerce_payment.commerce_payment_gateway.') as $config_name) {
     $config = $config_factory->getEditable($config_name);
-    
+
     // Check if this is a BTCPay gateway.
     if ($config->get('plugin') === 'btcpay_redirect') {
       // Update the configuration.
       $config->set('configuration.collect_billing_information', FALSE);
       $config->set('configuration.payment_method_types', []);
       $config->save();
-      
+
       \Drupal::messenger()->addMessage(t('Updated BTCPay payment gateway configuration: @name', [
         '@name' => $config->get('label'),
       ]));
     }
   }
+}
+
+/**
+ * Moves API keys and webhook secrets out of exportable configuration.
+ */
+function commerce_btcpay_update_8002() {
+  $config_factory = \Drupal::configFactory();
+  /** @var \Drupal\commerce_btcpay\CredentialStorage $credential_storage */
+  $credential_storage = \Drupal::service('commerce_btcpay.credential_storage');
+
+  foreach ($config_factory->listAll('commerce_payment.commerce_payment_gateway.') as $config_name) {
+    $config = $config_factory->getEditable($config_name);
+    if ($config->get('plugin') !== 'btcpay_redirect') {
+      continue;
+    }
+
+    $gateway_id = substr($config_name, strlen('commerce_payment.commerce_payment_gateway.'));
+    $credentials = [];
+    $api_key = $config->get('configuration.api_key');
+    $webhook_secret = $config->get('configuration.webhook_secret');
+    if (is_string($api_key) && $api_key !== '') {
+      $credentials['api_key'] = $api_key;
+    }
+    if (is_string($webhook_secret) && $webhook_secret !== '') {
+      $credentials['webhook_secret'] = $webhook_secret;
+    }
+    if ($credentials !== []) {
+      $credential_storage->set($gateway_id, $credentials);
+    }
+
+    $config->clear('configuration.api_key');
+    $config->clear('configuration.webhook_secret');
+    $config->set('configuration.mode', 'live');
+    if ($config->get('configuration.send_buyer_email') === NULL) {
+      $config->set('configuration.send_buyer_email', FALSE);
+    }
+    $config->save(TRUE);
+  }
+
+  return t('Moved BTCPay API keys and webhook secrets to encrypted, non-exportable storage.');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function commerce_btcpay_uninstall() {
+  \Drupal::keyValue('commerce_btcpay.credentials')->deleteAll();
+  \Drupal::keyValue('commerce_btcpay.webhook_events')->deleteAll();
+  \Drupal::service('keyvalue.expirable')->get('commerce_btcpay.authorization_state')->deleteAll();
 }

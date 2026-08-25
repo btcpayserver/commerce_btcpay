@@ -5,12 +5,14 @@
  * Contains commerce_btcpay.module.
  */
 
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\commerce_payment\Entity\PaymentGatewayInterface;
+
 /**
- * Implements hook_entity_type_alter().
+ * Implements hook_entity_delete().
  */
-function commerce_btcpay_entity_type_alter(array &$entity_types) {
-  // Use custom storage to fix payment gateway loading issue in Commerce core.
-  if (isset($entity_types['commerce_payment'])) {
-    $entity_types['commerce_payment']->setStorageClass('Drupal\commerce_btcpay\BtcPayPaymentStorage');
+function commerce_btcpay_entity_delete(EntityInterface $entity) {
+  if ($entity instanceof PaymentGatewayInterface && $entity->getPluginId() === 'btcpay_redirect') {
+    \Drupal::service('commerce_btcpay.credential_storage')->delete((string) $entity->id());
   }
 }

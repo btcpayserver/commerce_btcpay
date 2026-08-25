@@ -2,383 +2,120 @@
 
 namespace Drupal\commerce_btcpay\Controller;
 
+use BTCPayServer\Client\ApiKey;
+use Drupal\commerce_btcpay\ApiKeyPermissions;
+use Drupal\commerce_btcpay\AuthorizationStateStorage;
+use Drupal\commerce_btcpay\ServerUrlPolicy;
+use Drupal\commerce_payment\Entity\PaymentGatewayInterface;
+use Drupal\Core\Access\AccessResult;
 use Drupal\Core\Controller\ControllerBase;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\Url;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RedirectResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Controller for BTCPay API key generation and authorization.
+ * Starts and receives BTCPay API-key authorization.
  */
-class ApiKeyController extends ControllerBase {
+final class ApiKeyController extends ControllerBase {
 
   /**
-   * Required permissions for BTCPay API key.
+   * Constructs an ApiKeyController object.
    */
-  const REQUIRED_PERMISSIONS = [
-    'btcpay.store.canviewinvoices',
-    'btcpay.store.cancreateinvoice',
-    'btcpay.store.canviewstoresettings',
-    'btcpay.store.canmodifyinvoices',
-    'btcpay.store.webhooks.canmodifywebhooks',
-  ];
+  public function __construct(
+    private readonly EntityTypeManagerInterface $paymentEntityTypeManager,
+    private readonly AuthorizationStateStorage $authorizationState,
+    private readonly ServerUrlPolicy $serverUrlPolicy,
+  ) {}
 
   /**
-   * Handles the callback from BTCPay Server after authorization.
+   * {@inheritdoc}
    */
-  public function apiKeyCallback(Request $request) {
-    $api_key = $request->request->get('apiKey');
-    $permissions = $request->request->all('permissions') ?: [];
-    $token = $request->query->get('token');
-    $gateway_id = $request->query->get('gateway_id');
-
-    // Validate token format
-    if (empty($token) || !preg_match('/^btcpay_\d+_[a-z0-9]+$/', $token)) {
-      return [
-        '#markup' => $this->t('<h1>Invalid Token</h1><p>Invalid authorization token.</p>'),
-      ];
-    }
-
-    if (empty($api_key) || empty($permissions)) {
-      return [
-        '#markup' => $this->t('<h1>Invalid Authorization</h1><p>Invalid authorization response from BTCPay Server.</p>'),
-      ];
-    }
-
-    // If gateway_id is provided, load the gateway and get server URL from it
-    $server_url = '';
-    $gateway = NULL;
-    
-    if (!empty($gateway_id)) {
-      $gateway_storage = \Drupal::entityTypeManager()->getStorage('commerce_payment_gateway');
-      $gateway = $gateway_storage->load($gateway_id);
-      
-      if ($gateway) {
-        $configuration = $gateway->getPluginConfiguration();
-        $server_url = $configuration['server_url'] ?? '';
-      }
-    }
-    
-    // If no server URL from gateway, try to get it from the request (stored by JS)
-    if (empty($server_url)) {
-      $server_url = $request->request->get('server_url') ?: $request->query->get('server_url');
-    }
-    
-    if (empty($server_url)) {
-      return [
-        '#markup' => $this->t('<h1>Missing Server URL</h1><p>Server URL not found. Please try again from the payment gateway configuration page.</p>'),
-      ];
-    }
-
-    // Verify the API key works with the server URL
-    if (!$this->verifyApiKey($server_url, $api_key)) {
-      return [
-        '#markup' => $this->t('<h1>Verification Failed</h1><p>Could not verify API key with BTCPay Server.</p>'),
-      ];
-    }
-
-    // Validate permissions
-    $validation = $this->validatePermissions($permissions);
-    if (!$validation['valid']) {
-      return [
-        '#markup' => $this->t('<h1>Invalid Permissions</h1><p>@error</p>', ['@error' => $validation['error']]),
-      ];
-    }
-
-    // Extract store ID from permissions
-    $store_id = $this->extractStoreId($permissions);
-
-    // If we have a gateway, update it directly
-    if ($gateway) {
-      $configuration = $gateway->getPluginConfiguration();
-      $configuration['api_key'] = $api_key;
-      $configuration['store_id'] = $store_id;
-      $gateway->setPluginConfiguration($configuration);
-      $gateway->save();
-      
-      $gateway_name = $gateway->label();
-      
-      // Setup webhook
-      $plugin = $gateway->getPlugin();
-      $webhook_setup = FALSE;
-      $webhook_message = '';
-      if (method_exists($plugin, 'setupWebhook')) {
-        try {
-          // Use reflection to call the protected method
-          $reflection = new \ReflectionClass($plugin);
-          $method = $reflection->getMethod('setupWebhook');
-          $method->setAccessible(TRUE);
-          // Pass the gateway ID as parameter
-          $webhook_setup = $method->invoke($plugin, $gateway_id);
-          
-          if ($webhook_setup) {
-            // Save the configuration again to store the webhook secret and webhook ID
-            $gateway->setPluginConfiguration($plugin->getConfiguration());
-            $gateway->save();
-            $webhook_message = 'Webhook configured successfully.';
-          }
-          else {
-            $webhook_message = 'Could not configure webhook automatically.';
-          }
-        }
-        catch (\Exception $e) {
-          $webhook_message = 'Error setting up webhook: ' . $e->getMessage();
-        }
-      }
-
-      // Show success page for existing gateway
-      $settings_url = Url::fromRoute('entity.commerce_payment_gateway.collection')->toString();
-      
-      return [
-        '#markup' => $this->t('
-          <div style="max-width: 800px; margin: 50px auto; padding: 20px; font-family: sans-serif;">
-            <h1 style="color: #28a745;">✓ API Key Generated and Saved Successfully!</h1>
-            <p style="font-size: 16px; line-height: 1.6;">
-              Your BTCPay Server has been authorized and the configuration has been saved.
-            </p>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-              <p style="margin: 5px 0;"><strong>Gateway:</strong> @gateway_name</p>
-              <p style="margin: 5px 0;"><strong>Server URL:</strong> @server_url</p>
-              <p style="margin: 5px 0;"><strong>Store ID:</strong> @store_id</p>
-              <p style="margin: 5px 0;"><strong>API Key:</strong> @api_key_preview</p>
-              <p style="margin: 5px 0;"><strong>Webhook:</strong> @webhook_status</p>
-            </div>
-            <p style="margin-top: 30px;">
-              <a href="@settings_url" style="display: inline-block; padding: 12px 24px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">
-                Go to Payment Gateways →
-              </a>
-            </p>
-          </div>
-        ', [
-          '@gateway_name' => $gateway_name,
-          '@server_url' => $server_url,
-          '@store_id' => $store_id,
-          '@api_key_preview' => substr($api_key, 0, 20) . '...',
-          '@webhook_status' => $webhook_message,
-          '@settings_url' => $settings_url,
-        ]),
-      ];
-    }
-    else {
-      // No gateway yet - create one automatically with a default name
-      $gateway_storage = \Drupal::entityTypeManager()->getStorage('commerce_payment_gateway');
-      
-      // Create new gateway
-      $gateway = $gateway_storage->create([
-        'id' => 'btcpay',
-        'label' => 'BTCPay Server',
-        'plugin' => 'btcpay_redirect',
-        'configuration' => [
-          'server_url' => $server_url,
-          'api_key' => $api_key,
-          'store_id' => $store_id,
-        ],
-        'status' => TRUE,
-      ]);
-      $gateway->save();
-      
-      $gateway_id = $gateway->id();
-      
-      // Setup webhook
-      $plugin = $gateway->getPlugin();
-      $webhook_setup = FALSE;
-      $webhook_message = '';
-      if (method_exists($plugin, 'setupWebhook')) {
-        try {
-          $reflection = new \ReflectionClass($plugin);
-          $method = $reflection->getMethod('setupWebhook');
-          $method->setAccessible(TRUE);
-          $webhook_setup = $method->invoke($plugin, $gateway_id);
-          
-          if ($webhook_setup) {
-            $gateway->setPluginConfiguration($plugin->getConfiguration());
-            $gateway->save();
-            $webhook_message = 'Webhook configured successfully.';
-          }
-          else {
-            $webhook_message = 'Could not configure webhook automatically.';
-          }
-        }
-        catch (\Exception $e) {
-          $webhook_message = 'Error setting up webhook: ' . $e->getMessage();
-        }
-      }
-      
-      // Show success page
-      $settings_url = Url::fromRoute('entity.commerce_payment_gateway.collection')->toString();
-      
-      return [
-        '#markup' => $this->t('
-          <div style="max-width: 800px; margin: 50px auto; padding: 20px; font-family: sans-serif;">
-            <h1 style="color: #28a745;">✓ Payment Gateway Created Successfully!</h1>
-            <p style="font-size: 16px; line-height: 1.6;">
-              Your BTCPay Server payment gateway has been created and configured automatically.
-            </p>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-              <p style="margin: 5px 0;"><strong>Gateway:</strong> BTCPay Server</p>
-              <p style="margin: 5px 0;"><strong>Server URL:</strong> @server_url</p>
-              <p style="margin: 5px 0;"><strong>Store ID:</strong> @store_id</p>
-              <p style="margin: 5px 0;"><strong>API Key:</strong> @api_key_preview</p>
-              <p style="margin: 5px 0;"><strong>Webhook:</strong> @webhook_status</p>
-            </div>
-            <p style="margin-top: 30px;">
-              <a href="@settings_url" style="display: inline-block; padding: 12px 24px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">
-                Go to Payment Gateways →
-              </a>
-            </p>
-          </div>
-        ', [
-          '@server_url' => $server_url,
-          '@store_id' => $store_id,
-          '@api_key_preview' => substr($api_key, 0, 20) . '...',
-          '@webhook_status' => $webhook_message,
-          '@settings_url' => $settings_url,
-        ]),
-      ];
-    }
+  public static function create(ContainerInterface $container): static {
+    return new static(
+      $container->get('entity_type.manager'),
+      $container->get('commerce_btcpay.authorization_state'),
+      $container->get('commerce_btcpay.server_url_policy'),
+    );
   }
 
   /**
-   * Success page after API key authorization.
+   * Checks access to the authorization endpoint.
    */
-  public function apiKeySuccess() {
-    $state = \Drupal::state();
-    $pending_data = $state->get('commerce_btcpay.pending_config');
-    
-    if (!$pending_data || empty($pending_data['timestamp'])) {
-      return [
-        '#markup' => $this->t('<h1>No Pending Authorization</h1><p>No pending authorization found. Please try the authorization process again.</p>'),
-      ];
-    }
-    
-    // Check if data is not older than 1 hour
-    if ((time() - $pending_data['timestamp']) >= 3600) {
-      $state->delete('commerce_btcpay.pending_config');
-      return [
-        '#markup' => $this->t('<h1>Authorization Expired</h1><p>The authorization has expired. Please try the authorization process again.</p>'),
-      ];
-    }
-    
-    $store_id = $pending_data['store_id'];
-    $api_key_preview = substr($pending_data['api_key'], 0, 20) . '...';
-    $settings_url = Url::fromRoute('entity.commerce_payment_gateway.collection')->toString();
-    
-    return [
-      '#markup' => $this->t('
-        <div style="max-width: 800px; margin: 50px auto; padding: 20px; font-family: sans-serif;">
-          <h1 style="color: #28a745;">✓ API Key Generated Successfully!</h1>
-          <p style="font-size: 16px; line-height: 1.6;">
-            Your BTCPay Server has been authorized successfully. The credentials are ready to use.
-          </p>
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 20px 0;">
-            <p style="margin: 5px 0;"><strong>Server URL:</strong> @server_url</p>
-            <p style="margin: 5px 0;"><strong>Store ID:</strong> @store_id</p>
-            <p style="margin: 5px 0;"><strong>API Key:</strong> @api_key_preview</p>
-          </div>
-          <h2>Next Steps:</h2>
-          <ol style="font-size: 16px; line-height: 1.8;">
-            <li>Go to <a href="@settings_url" style="color: #007bff;">Payment Gateway Settings</a></li>
-            <li>Edit your BTCPay payment gateway (or create a new one)</li>
-            <li>The Server URL, API Key, and Store ID will be automatically filled</li>
-            <li>Click "Save" to complete the setup</li>
-          </ol>
-          <p style="margin-top: 30px;">
-            <a href="@settings_url" style="display: inline-block; padding: 12px 24px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">
-              Go to Payment Gateway Settings →
-            </a>
-          </p>
-          <p style="margin-top: 20px; font-size: 14px; color: #666;">
-            Note: These credentials will be available for 1 hour. Make sure to save your payment gateway configuration within this time.
-          </p>
-        </div>
-      ', [
-        '@server_url' => $pending_data['server_url'],
-        '@store_id' => $store_id,
-        '@api_key_preview' => $api_key_preview,
-        '@settings_url' => $settings_url,
-      ]),
-    ];
+  public function authorizeAccess(AccountInterface $account): AccessResult {
+    return AccessResult::allowedIfHasPermission($account, 'administer commerce_payment_gateway');
   }
 
   /**
-   * Verifies that the API key works with the server.
+   * Creates server-side state and returns the BTCPay authorization URL.
    */
-  protected function verifyApiKey($server_url, $api_key) {
+  public function beginAuthorization(Request $request): JsonResponse {
     try {
-      $client = new \BTCPayServer\Client\ApiKey($server_url, $api_key);
-      // Try to get current user info to verify the key works
-      $client->getCurrent();
-      return TRUE;
+      $data = json_decode($request->getContent(), TRUE, 8, JSON_THROW_ON_ERROR);
     }
-    catch (\Exception $e) {
-      \Drupal::logger('commerce_btcpay')->error('API key verification failed: @error', [
-        '@error' => $e->getMessage(),
+    catch (\JsonException) {
+      return new JsonResponse(['message' => 'Malformed request.'], 400);
+    }
+
+    $gateway_id = is_array($data) && is_string($data['gateway_id'] ?? NULL) ? $data['gateway_id'] : '';
+    $server_url = is_array($data) && is_string($data['server_url'] ?? NULL) ? $data['server_url'] : '';
+    $gateway = $this->paymentEntityTypeManager->getStorage('commerce_payment_gateway')->load($gateway_id);
+    if (!$gateway instanceof PaymentGatewayInterface || $gateway->getPluginId() !== 'btcpay_redirect') {
+      return new JsonResponse(['message' => 'Save the BTCPay gateway before authorizing it.'], 400);
+    }
+    if (!$gateway->access('update', $this->currentUser())) {
+      return new JsonResponse(['message' => 'Access denied.'], 403);
+    }
+
+    try {
+      $server_url = $this->serverUrlPolicy->normalize($server_url);
+    }
+    catch (\InvalidArgumentException $e) {
+      return new JsonResponse(['message' => $e->getMessage()], 400);
+    }
+
+    $state = $this->authorizationState->create(
+      (int) $this->currentUser()->id(),
+      $server_url,
+      $gateway_id,
+    );
+    $callback_url = Url::fromRoute('commerce_btcpay.api_key_callback', [], [
+      'absolute' => TRUE,
+      'query' => ['state' => $state],
+    ])->toString();
+    $authorization_url = ApiKey::getAuthorizeUrl(
+      $server_url,
+      ApiKeyPermissions::REQUIRED,
+      'Drupal Commerce',
+      TRUE,
+      TRUE,
+      $callback_url,
+      'drupal-commerce',
+    );
+
+    return new JsonResponse(['authorization_url' => $authorization_url]);
+  }
+
+  /**
+   * Receives the public cross-site POST without changing gateway state.
+   */
+  public function apiKeyCallback(Request $request): Response {
+    $state = $request->query->get('state');
+    $api_key = $request->request->get('apiKey');
+    if (!is_string($state) || !is_string($api_key) || !$this->authorizationState->attachCandidate($state, $api_key)) {
+      return new Response((string) $this->t('Invalid or expired BTCPay authorization.'), 400, [
+        'Content-Type' => 'text/plain; charset=UTF-8',
       ]);
-      return FALSE;
-    }
-  }
-
-  /**
-   * Validates that the permissions are correct.
-   */
-  protected function validatePermissions(array $permissions) {
-    // Extract permission names (without store IDs)
-    $permission_names = [];
-    foreach ($permissions as $permission) {
-      $parts = explode(':', $permission);
-      $permission_names[] = $parts[0];
     }
 
-    // Check if all required permissions are present
-    $missing = array_diff(self::REQUIRED_PERMISSIONS, $permission_names);
-    if (!empty($missing)) {
-      return [
-        'valid' => FALSE,
-        'error' => $this->t('Missing required permissions: @permissions', [
-          '@permissions' => implode(', ', $missing),
-        ]),
-      ];
-    }
-
-    // Check if all permissions are for the same store
-    $store_ids = [];
-    foreach ($permissions as $permission) {
-      $parts = explode(':', $permission);
-      if (count($parts) === 2) {
-        $store_ids[] = $parts[1];
-      }
-    }
-
-    $unique_stores = array_unique($store_ids);
-    if (count($unique_stores) > 1) {
-      return [
-        'valid' => FALSE,
-        'error' => $this->t('Permissions must be for a single store only.'),
-      ];
-    }
-
-    return ['valid' => TRUE];
-  }
-
-  /**
-   * Extracts the store ID from permissions.
-   */
-  protected function extractStoreId(array $permissions) {
-    foreach ($permissions as $permission) {
-      $parts = explode(':', $permission);
-      if (count($parts) === 2) {
-        return $parts[1];
-      }
-    }
-    return NULL;
-  }
-
-  /**
-   * Redirects to payment gateway settings.
-   */
-  protected function redirectToSettings() {
-    return new RedirectResponse(Url::fromRoute('entity.commerce_payment_gateway.collection')->toString());
+    $url = Url::fromRoute('commerce_btcpay.api_key_confirm', [], [
+      'query' => ['state' => $state],
+    ])->toString();
+    return new RedirectResponse($url, 303);
   }
 
 }

@@ -1,5 +1,35 @@
 services:
-  commerce_btcpay.logger:
-    class: Drupal\Core\Logger\LoggerChannel
-    factory: logger.factory:get
+  logger.channel.commerce_btcpay:
+    parent: logger.channel_base
     arguments: ['commerce_btcpay']
+
+  commerce_btcpay.secret_encryptor:
+    class: Drupal\commerce_btcpay\Security\SecretEncryptor
+    arguments: ['@private_key']
+
+  commerce_btcpay.credential_storage:
+    class: Drupal\commerce_btcpay\CredentialStorage
+    arguments: ['@keyvalue', '@commerce_btcpay.secret_encryptor']
+
+  commerce_btcpay.authorization_state:
+    class: Drupal\commerce_btcpay\AuthorizationStateStorage
+    arguments: ['@keyvalue.expirable', '@lock', '@datetime.time', '@commerce_btcpay.secret_encryptor']
+
+  commerce_btcpay.server_url_policy:
+    class: Drupal\commerce_btcpay\ServerUrlPolicy
+
+  commerce_btcpay.api_key_verifier:
+    class: Drupal\commerce_btcpay\ApiKeyVerifier
+    arguments: ['@commerce_btcpay.server_url_policy']
+
+  commerce_btcpay.webhook_event_storage:
+    class: Drupal\commerce_btcpay\WebhookEventStorage
+    arguments: ['@keyvalue']
+
+  commerce_btcpay.api_key_manager:
+    class: Drupal\commerce_btcpay\ApiKeyManager
+    arguments:
+      - '@entity_type.manager'
+      - '@commerce_btcpay.credential_storage'
+      - '@commerce_btcpay.api_key_verifier'
+      - '@logger.channel.commerce_btcpay'

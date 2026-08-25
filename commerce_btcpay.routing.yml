@@ -5,19 +5,38 @@ commerce_btcpay.notify:
   methods: [POST]
   requirements:
     _access: 'TRUE'
+  options:
+    parameters:
+      commerce_payment_gateway:
+        type: entity:commerce_payment_gateway
 
 commerce_btcpay.api_key_callback:
   path: '/btcpay/api-key-callback'
   defaults:
     _controller: '\Drupal\commerce_btcpay\Controller\ApiKeyController::apiKeyCallback'
-  methods: [GET, POST]
+  methods: [POST]
   requirements:
     _access: 'TRUE'
+  options:
+    no_cache: TRUE
 
-commerce_btcpay.api_key_success:
-  path: '/btcpay/api-key-success'
+commerce_btcpay.api_key_authorize:
+  path: '/admin/commerce/config/payment-gateways/btcpay/authorize'
   defaults:
-    _controller: '\Drupal\commerce_btcpay\Controller\ApiKeyController::apiKeySuccess'
-    _title: 'BTCPay API Key Authorization Success'
+    _controller: '\Drupal\commerce_btcpay\Controller\ApiKeyController::beginAuthorization'
+  methods: [POST]
   requirements:
-    _access: 'TRUE'
+    _custom_access: '\Drupal\commerce_btcpay\Controller\ApiKeyController::authorizeAccess'
+    _csrf_token: 'TRUE'
+  options:
+    no_cache: TRUE
+
+commerce_btcpay.api_key_confirm:
+  path: '/admin/commerce/config/payment-gateways/btcpay/confirm'
+  defaults:
+    _form: '\Drupal\commerce_btcpay\Form\ApiKeyConfirmationForm'
+    _title: 'Confirm BTCPay authorization'
+  requirements:
+    _permission: 'administer commerce_payment_gateway'
+  options:
+    no_cache: TRUE
