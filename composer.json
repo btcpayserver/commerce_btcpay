@@ -2,13 +2,15 @@
   "name": "drupal/commerce_btcpay",
   "description": "BTCPay Bitcoin and cryptocurrency payment module. Compatible with BitPay API and supporting multiple cryptocurrencies.",
   "type": "drupal-module",
-  "license": "GPL-2.0+",
+  "license": "GPL-2.0-or-later",
   "homepage": "https://www.drupal.org/project/commerce_btcpay",
   "support": {
     "source": "https://github.com/btcpayserver/commerce_btcpay"
   },
   "require": {
-    "btcpayserver/btcpayserver-greenfield-php": "^2.8"
+    "btcpayserver/btcpayserver-greenfield-php": "^2.8",
+    "ext-bcmath": "*",
+    "ext-openssl": "*"
   },
   "minimum-stability": "dev"
 }

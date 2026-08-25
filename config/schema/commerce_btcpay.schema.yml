@@ -4,18 +4,15 @@ commerce_payment.commerce_payment_gateway.plugin.btcpay_redirect:
     server_url:
       type: string
       label: "BTCPay Server URL"
-    api_key:
-      type: string
-      label: "API Key"
     store_id:
       type: string
       label: "Store ID"
-    webhook_secret:
-      type: string
-      label: "Webhook Secret"
     webhook_id:
       type: string
       label: "Webhook ID"
+    send_buyer_email:
+      type: boolean
+      label: "Send buyer email"
     debug_mode:
       type: boolean
       label: "Debug Mode"

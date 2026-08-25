@@ -7,21 +7,23 @@ use BTCPayServer\Client\InvoiceCheckoutOptions;
 use BTCPayServer\Client\Webhook;
 use BTCPayServer\Result\Invoice as InvoiceResult;
 use BTCPayServer\Util\PreciseNumber;
-use Drupal\commerce_checkout\CheckoutOrderManagerInterface;
+use Drupal\commerce_btcpay\ApiKeyVerifier;
+use Drupal\commerce_btcpay\CredentialStorage;
+use Drupal\commerce_btcpay\InvoiceStatus;
+use Drupal\commerce_btcpay\ServerUrlPolicy;
+use Drupal\commerce_btcpay\WebhookEventStorage;
 use Drupal\commerce_order\Entity\OrderInterface;
 use Drupal\commerce_payment\Entity\PaymentInterface;
 use Drupal\commerce_payment\Exception\PaymentGatewayException;
-use Drupal\commerce_payment\PaymentMethodTypeManager;
-use Drupal\commerce_payment\PaymentTypeManager;
 use Drupal\commerce_payment\Plugin\Commerce\PaymentGateway\OffsitePaymentGatewayBase;
-use Drupal\commerce_price\Price;
-use Drupal\Component\Datetime\TimeInterface;
-use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Entity\EntityFormInterface;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Lock\LockBackendInterface;
+use Drupal\Core\Url;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
-use Drupal\Core\StringTranslation\StringTranslationTrait;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Provides the BTCPay off-site Redirect payment gateway.
@@ -30,6 +32,9 @@ use Drupal\Core\StringTranslation\StringTranslationTrait;
  *   id = "btcpay_redirect",
  *   label = @Translation("BTCPay Server (Off-site redirect)"),
  *   display_label = @Translation("Pay with Bitcoin, Lightning Network"),
+ *   modes = {
+ *     "live" = @Translation("Live"),
+ *   },
  *   forms = {
  *     "offsite-payment" = "Drupal\commerce_btcpay\PluginForm\BtcPayRedirectForm",
  *   },
@@ -38,56 +43,54 @@ use Drupal\Core\StringTranslation\StringTranslationTrait;
  * )
  */
 class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterface {
-  use StringTranslationTrait;
 
   /**
    * The logger.
-   *
-   * @var \Psr\Log\LoggerInterface
    */
-  protected $logger;
+  protected LoggerInterface $logger;
 
   /**
-   * The checkout order manager.
-   *
-   * @var \Drupal\commerce_checkout\CheckoutOrderManagerInterface
+   * Protected credential storage.
    */
-  protected $checkoutOrderManager;
+  protected CredentialStorage $credentialStorage;
 
   /**
-   * {@inheritdoc}
+   * The BTCPay Server URL policy.
    */
-  public function __construct(array $configuration, $plugin_id, $plugin_definition, EntityTypeManagerInterface $entity_type_manager, PaymentTypeManager $payment_type_manager, PaymentMethodTypeManager $payment_method_type_manager, TimeInterface $time, CheckoutOrderManagerInterface $checkout_order_manager, LoggerInterface $logger) {
-    parent::__construct($configuration, $plugin_id, $plugin_definition, $entity_type_manager, $payment_type_manager, $payment_method_type_manager, $time);
-    $this->checkoutOrderManager = $checkout_order_manager;
-    $this->logger = $logger;
-  }
+  protected ServerUrlPolicy $serverUrlPolicy;
 
   /**
-   * {@inheritdoc}
+   * The API-key verifier.
    */
+  protected ApiKeyVerifier $apiKeyVerifier;
+
+  /**
+   * The lock backend.
+   */
+  protected LockBackendInterface $lock;
+
+  /**
+   * Webhook delivery processing storage.
+   */
+  protected WebhookEventStorage $webhookEventStorage;
+
+  /**
+   * Gateway ID available while the plugin configuration form is active.
+   */
+  protected ?string $activeGatewayId = NULL;
+
   /**
    * {@inheritdoc}
    */
   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition) {
-    return new static(
-      $configuration,
-      $plugin_id,
-      $plugin_definition,
-      $container->get('entity_type.manager'),
-      $container->get('plugin.manager.commerce_payment_type'),
-      $container->get('plugin.manager.commerce_payment_method_type'),
-      $container->get('datetime.time'),
-      $container->get('commerce_checkout.checkout_order_manager'),
-      $container->get('logger.factory')->get('commerce_btcpay')
-    );
-  }
-  
-  /**
-   * {@inheritdoc}
-   */
-  public function getMode() {
-    return null;
+    $instance = parent::create($container, $configuration, $plugin_id, $plugin_definition);
+    $instance->logger = $container->get('logger.channel.commerce_btcpay');
+    $instance->credentialStorage = $container->get('commerce_btcpay.credential_storage');
+    $instance->serverUrlPolicy = $container->get('commerce_btcpay.server_url_policy');
+    $instance->apiKeyVerifier = $container->get('commerce_btcpay.api_key_verifier');
+    $instance->lock = $container->get('lock');
+    $instance->webhookEventStorage = $container->get('commerce_btcpay.webhook_event_storage');
+    return $instance;
   }
 
   /**
@@ -96,12 +99,10 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
   public function defaultConfiguration() {
     return [
       'server_url' => '',
-      'api_key' => '',
       'store_id' => '',
-      'webhook_secret' => '',
       'webhook_id' => '',
+      'send_buyer_email' => FALSE,
       'debug_mode' => FALSE,
-      // Offsite gateways don't collect billing information or payment methods.
       'collect_billing_information' => FALSE,
       'payment_method_types' => [],
     ] + parent::defaultConfiguration();
@@ -111,24 +112,24 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
    * {@inheritdoc}
    */
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
-    // Ensure configuration has default values before calling parent.
-    $this->configuration += $this->defaultConfiguration();
-    
     $form = parent::buildConfigurationForm($form, $form_state);
+    $form_object = $form_state->getFormObject();
+    assert($form_object instanceof EntityFormInterface);
+    $gateway = $form_object->getEntity();
+    $this->activeGatewayId = $gateway->id() ? (string) $gateway->id() : NULL;
+    $has_stored_key = $this->activeGatewayId !== NULL && $this->hasApiKey();
+    $can_authorize = $this->activeGatewayId !== NULL && !$gateway->isNew();
 
-    // Attach the API key redirect JavaScript library.
     $form['#attached']['library'][] = 'commerce_btcpay/api_key_redirect';
-    
-    // Get the payment gateway entity ID from the form state
-    $gateway = $form_state->getFormObject()->getEntity();
-    $gateway_id = $gateway->id();
-    
-    // Pass the gateway entity ID to JavaScript
-    $form['#attached']['drupalSettings']['commerce_btcpay']['gateway_id'] = $gateway_id;
+    $form['#attached']['drupalSettings']['commerce_btcpay'] = [
+      'gateway_id' => $can_authorize ? $this->activeGatewayId : '',
+      'authorize_url' => $can_authorize
+        ? Url::fromRoute('commerce_btcpay.api_key_authorize')->toString()
+        : '',
+      'allow_insecure_http' => $this->serverUrlPolicy->allowsInsecureHttp(),
+    ];
 
-    // Hide fields not applicable to offsite payment gateways.
     $form['mode']['#access'] = FALSE;
-    // For offsite gateways, we don't collect billing information or payment methods.
     if (isset($form['collect_billing_information'])) {
       $form['collect_billing_information']['#access'] = FALSE;
       $form['collect_billing_information']['#value'] = FALSE;
@@ -141,49 +142,55 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
     $form['server_url'] = [
       '#type' => 'url',
       '#title' => $this->t('BTCPay Server URL'),
-      '#description' => $this->t('Enter your BTCPay Server URL (e.g., https://btcpay.example.com). Note: .local domains only work on your local network.'),
-      '#default_value' => $this->configuration['server_url'] ?? '',
+      '#description' => $this->t('Use the HTTPS base URL of your BTCPay Server (for example, https://btcpay.example.com).'),
+      '#default_value' => $this->configuration['server_url'],
       '#required' => TRUE,
     ];
-
     $form['generate_api_key'] = [
       '#type' => 'button',
       '#value' => $this->t('Generate API Key'),
+      '#disabled' => !$can_authorize,
       '#attributes' => [
         'class' => ['btcpay-generate-api-key', 'button', 'button--primary'],
       ],
       '#prefix' => '<div class="form-item">',
-      '#suffix' => '<div class="description">' . $this->t('Click this button to automatically generate an API key with the correct permissions. You will be redirected to your BTCPay Server to authorize the connection.') . '</div></div>',
+      '#suffix' => '<div class="description">' . ($can_authorize
+        ? $this->t('Authorize the saved gateway with a least-privilege API key.')
+        : $this->t('Save this payment gateway before generating an API key.')) . '</div></div>',
     ];
-
     $form['store_id'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Store ID'),
-      '#description' => $this->t('Your BTCPay Server Store ID. This will be automatically filled when you generate an API key.'),
-      '#default_value' => $this->configuration['store_id'] ?? '',
-      '#required' => TRUE,
+      '#description' => $this->t('The store selected during API-key authorization. It may be blank only while saving a new disabled gateway.'),
+      '#default_value' => $this->configuration['store_id'],
     ];
-
     $form['api_key'] = [
-      '#type' => 'textfield',
-      '#title' => $this->t('API Key'),
-      '#description' => $this->t('Your BTCPay Server API Key. This will be automatically filled when you generate an API key, or you can manually enter one from BTCPay Server under Account > Manage Account > API Keys. Required permissions: View invoices, Create invoice, Modify invoices, Modify stores webhooks.'),
-      '#default_value' => $this->configuration['api_key'] ?? '',
-      '#required' => TRUE,
+      '#type' => 'password',
+      '#title' => $this->t('New API key'),
+      '#maxlength' => 2048,
+      '#description' => $has_stored_key
+        ? $this->t('An API key is stored securely. Leave blank to keep it unchanged.')
+        : $this->t('Enter an API key, or save this gateway as disabled and then use Generate API Key.'),
+      '#attributes' => ['autocomplete' => 'new-password'],
     ];
-
     $form['webhook_secret'] = [
-      '#type' => 'textfield',
-      '#title' => $this->t('Webhook Secret'),
-      '#description' => $this->t('Optional: A secret string to validate webhook requests. Will be auto-configured if left empty.'),
-      '#default_value' => $this->configuration['webhook_secret'] ?? '',
+      '#type' => 'password',
+      '#title' => $this->t('New webhook secret'),
+      '#maxlength' => 512,
+      '#description' => $this->t('Leave blank to preserve the encrypted secret or generate one automatically.'),
+      '#attributes' => ['autocomplete' => 'new-password'],
     ];
-
+    $form['send_buyer_email'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Send the customer email address to BTCPay Server'),
+      '#description' => $this->t('Disabled by default to minimize customer data shared with the payment server.'),
+      '#default_value' => $this->configuration['send_buyer_email'],
+    ];
     $form['debug_mode'] = [
       '#type' => 'checkbox',
-      '#title' => $this->t('Debug Mode'),
-      '#description' => $this->t('Enable verbose logging for debugging. Disable in production to reduce log entries.'),
-      '#default_value' => $this->configuration['debug_mode'] ?? FALSE,
+      '#title' => $this->t('Debug mode'),
+      '#description' => $this->t('Log additional non-sensitive payment state details.'),
+      '#default_value' => $this->configuration['debug_mode'],
     ];
 
     return $form;
@@ -192,132 +199,161 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
   /**
    * {@inheritdoc}
    */
-  public function submitConfigurationForm(array &$form, FormStateInterface $form_state) {
-    parent::submitConfigurationForm($form, $form_state);
+  public function validateConfigurationForm(array &$form, FormStateInterface $form_state) {
+    parent::validateConfigurationForm($form, $form_state);
+    $form_object = $form_state->getFormObject();
+    assert($form_object instanceof EntityFormInterface);
+    $gateway = $form_object->getEntity();
+    $gateway_id = $gateway->id() ?: $form_state->getValue('id');
+    $this->activeGatewayId = is_string($gateway_id) && $gateway_id !== '' ? $gateway_id : NULL;
+    $values = $form_state->getValue($form['#parents']);
 
-    if (!$form_state->getErrors()) {
-      $values = $form_state->getValue($form['#parents']);
-      $this->configuration['server_url'] = $values['server_url'];
-      $this->configuration['api_key'] = $values['api_key'];
-      $this->configuration['store_id'] = $values['store_id'];
-      $this->configuration['webhook_secret'] = $values['webhook_secret'];
-      $this->configuration['debug_mode'] = $values['debug_mode'] ?? FALSE;
-      
-      // Ensure offsite gateway settings are correct.
-      $this->configuration['collect_billing_information'] = FALSE;
-      $this->configuration['payment_method_types'] = [];
-      
-      // Setup webhook after saving configuration
-      // Get the gateway entity ID from the form state
-      $gateway = $form_state->getFormObject()->getEntity();
-      $gateway_id = $gateway->id();
-      
-      if ($this->setupWebhook($gateway_id)) {
-        \Drupal::messenger()->addStatus($this->t('Webhook configured successfully.'));
-      }
-      else {
-        \Drupal::messenger()->addWarning($this->t('Could not configure webhook. Please check the logs.'));
-      }
+    try {
+      $server_url = $this->serverUrlPolicy->normalize((string) ($values['server_url'] ?? ''));
+      $form_state->setValueForElement($form['server_url'], $server_url);
+    }
+    catch (\InvalidArgumentException $e) {
+      $form_state->setError($form['server_url'], $this->t('@message', ['@message' => $e->getMessage()]));
+      return;
+    }
 
-      // Persist the webhook_id and any configuration changes made during
-      // setupWebhook() to the payment gateway entity immediately.
-      // In the settings form context, ensure we save the configuration.
-      if ($gateway && method_exists($gateway, 'setPluginConfiguration')) {
-        $gateway->setPluginConfiguration($this->getConfiguration());
-        $gateway->save();
+    $api_key = (string) ($values['api_key'] ?? '');
+    $webhook_secret = (string) ($values['webhook_secret'] ?? '');
+    if ($webhook_secret !== '' && strlen($webhook_secret) < 32) {
+      $form_state->setError($form['webhook_secret'], $this->t('The webhook secret must contain at least 32 characters.'));
+    }
+    if ($api_key === '') {
+      $api_key = $this->getApiKey();
+    }
+    if ($api_key === '') {
+      $gateway_enabled = (bool) $form_state->getValue('status');
+      if ($gateway_enabled) {
+        $form_state->setError($form['api_key'], $this->t('An enabled gateway requires a verified API key. Save it as disabled before using Generate API Key.'));
       }
+      if ($webhook_secret !== '') {
+        $form_state->setError($form['webhook_secret'], $this->t('A webhook secret cannot be saved without an API key.'));
+      }
+      return;
+    }
+
+    $store_id = trim((string) ($values['store_id'] ?? ''));
+    $form_state->setValueForElement($form['store_id'], $store_id);
+    if ($store_id === '') {
+      $form_state->setError($form['store_id'], $this->t('A store ID is required when an API key is configured.'));
+      return;
+    }
+
+    try {
+      $this->apiKeyVerifier->verify($server_url, $api_key, $store_id);
+    }
+    catch (\Throwable) {
+      $form_state->setError($form['api_key'], $this->t('The API key, required permissions, server URL, and store ID could not be verified.'));
     }
   }
 
   /**
-   * Sets up or updates the webhook for this payment gateway.
-   * 
-   * @param string|null $gateway_id
-   *   The payment gateway entity ID. If not provided, will try to get from entityId.
-   * 
-   * @return bool
-   *   TRUE if webhook was set up successfully, FALSE otherwise.
+   * {@inheritdoc}
    */
-  protected function setupWebhook($gateway_id = NULL) {
-    // Get the gateway ID from parameter or from the entity
-    if (!$gateway_id) {
-      $gateway_id = $this->entityId ?? NULL;
+  public function submitConfigurationForm(array &$form, FormStateInterface $form_state) {
+    $webhook_id = is_string($this->configuration['webhook_id'] ?? NULL)
+      ? $this->configuration['webhook_id']
+      : '';
+    parent::submitConfigurationForm($form, $form_state);
+    if ($form_state->getErrors()) {
+      return;
     }
-    
+
+    $values = $form_state->getValue($form['#parents']);
+    $form_object = $form_state->getFormObject();
+    assert($form_object instanceof EntityFormInterface);
+    $gateway = $form_object->getEntity();
+    $gateway_id = $gateway->id() ?: $form_state->getValue('id');
+    $this->activeGatewayId = is_string($gateway_id) && $gateway_id !== '' ? $gateway_id : NULL;
+    if ($this->activeGatewayId === NULL) {
+      throw new \LogicException('A gateway ID is required before storing BTCPay configuration.');
+    }
+
+    $this->configuration['server_url'] = $this->serverUrlPolicy->normalize($values['server_url']);
+    $this->configuration['store_id'] = (string) $values['store_id'];
+    $this->configuration['webhook_id'] = $webhook_id;
+    $this->configuration['send_buyer_email'] = !empty($values['send_buyer_email']);
+    $this->configuration['debug_mode'] = !empty($values['debug_mode']);
+    $this->configuration['collect_billing_information'] = FALSE;
+    $this->configuration['payment_method_types'] = [];
+    unset($this->configuration['api_key'], $this->configuration['webhook_secret']);
+
+    $credentials = [];
+    if (!empty($values['api_key'])) {
+      $credentials['api_key'] = (string) $values['api_key'];
+    }
+    if (!empty($values['webhook_secret'])) {
+      $credentials['webhook_secret'] = (string) $values['webhook_secret'];
+    }
+    if ($credentials !== []) {
+      $this->credentialStorage->set($this->activeGatewayId, $credentials);
+    }
+
+    if (!$this->hasApiKey()) {
+      $this->messenger()->addStatus($this->t('The disabled gateway was saved. Edit it and use Generate API Key to finish authorization.'));
+      return;
+    }
+
+    if ($this->setupWebhook($this->activeGatewayId)) {
+      $this->messenger()->addStatus($this->t('The signed BTCPay webhook was configured successfully.'));
+    }
+    else {
+      $this->messenger()->addWarning($this->t('The webhook could not be configured. Review the log before accepting payments.'));
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function setupWebhook(?string $gateway_id = NULL): bool {
+    $gateway_id = $gateway_id ?: $this->getGatewayId();
     if (!$gateway_id) {
-      $this->logger->error('Cannot setup webhook: gateway ID not available.');
+      $this->logger->error('Cannot configure BTCPay webhook without a gateway ID.');
       return FALSE;
     }
-    if (empty($this->configuration['server_url']) || empty($this->configuration['api_key']) || empty($this->configuration['store_id'])) {
-      $this->logger->error('Cannot setup webhook: missing configuration.');
-      return FALSE;
-    }
+    $this->activeGatewayId = $gateway_id;
 
     try {
-      $webhook_client = new \BTCPayServer\Client\Webhook(
-        $this->configuration['server_url'],
-        $this->configuration['api_key']
-      );
+      $server_url = $this->serverUrlPolicy->normalize($this->configuration['server_url']);
+      $api_key = $this->getApiKey();
+      $store_id = (string) $this->configuration['store_id'];
+      if ($api_key === '' || $store_id === '') {
+        throw new \UnexpectedValueException('BTCPay credentials or store ID are missing.');
+      }
 
-      // Build the webhook URL
-      $webhook_url = \Drupal\Core\Url::fromRoute('commerce_btcpay.notify', [
+      $client = new Webhook($server_url, $api_key);
+      $webhook_url = Url::fromRoute('commerce_btcpay.notify', [
         'commerce_payment_gateway' => $gateway_id,
       ], ['absolute' => TRUE])->toString();
+      $webhook_id = $this->configuration['webhook_id'] ?: NULL;
 
-      // Check if we have a stored webhook ID
-      $webhook_id = $this->configuration['webhook_id'] ?? NULL;
-
-      // Verify the stored webhook exists; otherwise, clear it so we can search by URL.
       if ($webhook_id) {
         try {
-          $webhook_client->getWebhook($this->configuration['store_id'], $webhook_id);
-          if ($this->configuration['debug_mode'] ?? FALSE) {
-            $this->logger->info('Using stored webhook ID: @id', ['@id' => $webhook_id]);
-          }
+          $client->getWebhook($store_id, $webhook_id);
         }
-        catch (\Throwable $e) {
-          // Webhook doesn't exist anymore, reset and try to find by URL.
-          if ($this->configuration['debug_mode'] ?? FALSE) {
-            $this->logger->warning('Stored webhook @id not found on server, will search by URL.', ['@id' => $webhook_id]);
-          }
+        catch (\Throwable) {
           $webhook_id = NULL;
         }
       }
-
-      // If we don't have a valid webhook ID, try to find an existing webhook by URL.
       if (!$webhook_id) {
-        try {
-          // Use getStoreWebhooks() which returns a WebhookList object
-          $webhook_list = $webhook_client->getStoreWebhooks($this->configuration['store_id']);
-          $existing_webhooks = $webhook_list->all(); // Returns array of Webhook result objects
-          
-          foreach ($existing_webhooks as $existing_webhook) {
-            // Webhook result object has getUrl() and getId() methods
-            $existing_url = $existing_webhook->getUrl();
-            if ($existing_url === $webhook_url) {
-              $webhook_id = $existing_webhook->getId();
-              if ($this->configuration['debug_mode'] ?? FALSE) {
-                $this->logger->info('Found existing webhook by URL with ID @id', ['@id' => $this->safeLogValue($webhook_id)]);
-              }
-              break;
-            }
-          }
-        }
-        catch (\Throwable $e) {
-          // Non-fatal: If listing webhooks fails, we'll fall back to creating one.
-          if ($this->configuration['debug_mode'] ?? FALSE) {
-            $this->logger->warning('Could not list existing webhooks: @error', ['@error' => $e->getMessage()]);
+        foreach ($client->getStoreWebhooks($store_id)->all() as $existing_webhook) {
+          if ($existing_webhook->getUrl() === $webhook_url) {
+            $webhook_id = $existing_webhook->getId();
+            break;
           }
         }
       }
 
-      // Ensure we have a webhook secret
-      if (empty($this->configuration['webhook_secret'])) {
-        $this->configuration['webhook_secret'] = bin2hex(random_bytes(32));
+      $secret = $this->getWebhookSecret();
+      if (strlen($secret) < 32) {
+        $secret = bin2hex(random_bytes(32));
+        $this->credentialStorage->set($gateway_id, ['webhook_secret' => $secret]);
       }
-
-      // Specific events we want to listen to
-      $specific_events = [
+      $events = [
         'InvoiceReceivedPayment',
         'InvoicePaymentSettled',
         'InvoiceProcessing',
@@ -327,53 +363,23 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
       ];
 
       if ($webhook_id) {
-        // Update existing webhook.
-        $webhook_client->updateWebhook(
-          $this->configuration['store_id'],
-          $webhook_url,
-          $webhook_id,
-          $specific_events,
-          TRUE, // enabled
-          TRUE, // automaticRedelivery
-          $this->configuration['webhook_secret']
-        );
-        if ($this->configuration['debug_mode'] ?? FALSE) {
-          $this->logger->info('Updated webhook @id for store @store', [
-            '@id' => $webhook_id,
-            '@store' => $this->configuration['store_id'],
-          ]);
-        }
-        // Persist the ID to config to be safe.
-        $this->configuration['webhook_id'] = $webhook_id;
+        $client->updateWebhook($store_id, $webhook_url, $webhook_id, $events, TRUE, TRUE, $secret);
       }
       else {
-        // Create new webhook.
-        $result = $webhook_client->createWebhook(
-          $this->configuration['store_id'],
-          $webhook_url,
-          $specific_events,
-          $this->configuration['webhook_secret'],
-          TRUE, // enabled
-          TRUE  // automaticRedelivery
-        );
-
-        // Store the webhook ID for future updates
-        $data = is_object($result) && method_exists($result, 'getData') ? $result->getData() : (array) $result;
-        $this->configuration['webhook_id'] = $data['id'] ?? NULL;
-
-        if ($this->configuration['debug_mode'] ?? FALSE) {
-          $this->logger->info('Created webhook @id for store @store', [
-            '@id' => $this->safeLogValue($this->configuration['webhook_id']),
-            '@store' => $this->configuration['store_id'],
-          ]);
-        }
+        $result = $client->createWebhook($store_id, $webhook_url, $events, $secret, TRUE, TRUE);
+        $data = $result->getData();
+        $webhook_id = $data['id'] ?? NULL;
+      }
+      if (!is_string($webhook_id) || $webhook_id === '') {
+        throw new \UnexpectedValueException('BTCPay did not return a webhook ID.');
       }
 
+      $this->configuration['webhook_id'] = $webhook_id;
       return TRUE;
     }
-    catch (\Exception $e) {
-      $this->logger->error('Error setting up webhook: @error', [
-        '@error' => $e->getMessage(),
+    catch (\Throwable $e) {
+      $this->logger->error('Could not configure the BTCPay webhook (@type).', [
+        '@type' => get_class($e),
       ]);
       return FALSE;
     }
@@ -383,19 +389,18 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
    * {@inheritdoc}
    */
   public function getInvoiceClient() {
-    if (empty($this->configuration['server_url']) || empty($this->configuration['api_key'])) {
-      $this->logger->error('BTCPay Server URL or API Key not configured.');
-      return NULL;
-    }
-
     try {
-      return new Invoice(
-        $this->configuration['server_url'],
-        $this->configuration['api_key']
-      );
+      $server_url = $this->serverUrlPolicy->normalize($this->configuration['server_url']);
+      $api_key = $this->getApiKey();
+      if ($api_key === '') {
+        throw new \UnexpectedValueException('BTCPay API key is missing.');
+      }
+      return new Invoice($server_url, $api_key);
     }
-    catch (\Exception $e) {
-      $this->logger->error('Error creating BTCPay API client: @error', ['@error' => $e->getMessage()]);
+    catch (\Throwable $e) {
+      $this->logger->error('Could not initialize the BTCPay invoice client (@type).', [
+        '@type' => get_class($e),
+      ]);
       return NULL;
     }
   }
@@ -403,62 +408,44 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
   /**
    * {@inheritdoc}
    */
-  public function createInvoice(OrderInterface $order, array $options = []) {
+  public function createInvoice(PaymentInterface $payment, array $options = []) {
     $client = $this->getInvoiceClient();
-    if (!$client) {
-      throw new PaymentGatewayException('Could not initialize BTCPay API client.');
+    $order = $payment->getOrder();
+    $amount = $payment->getAmount();
+    if (!$client || !$order || !$amount || !$amount->isPositive()) {
+      throw PaymentGatewayException::createForPayment($payment, 'Could not initialize a valid BTCPay invoice.');
     }
-
-    $store_id = $this->configuration['store_id'];
-    $amount = $order->getTotalPrice();
 
     try {
-      // Prepare metadata (don't include orderId or buyerEmail as they're passed separately).
-      $metadata = [
-        'orderNumber' => $order->getOrderNumber(),
-      ];
-
-      // Add checkout options.
-      $checkoutOptions = new InvoiceCheckoutOptions();
-      
+      $checkout_options = new InvoiceCheckoutOptions();
       if (!empty($options['return_url'])) {
-        $checkoutOptions->setRedirectURL($options['return_url']);
+        $checkout_options->setRedirectURL($options['return_url']);
+      }
+      $email = !empty($this->configuration['send_buyer_email']) ? $order->getEmail() : NULL;
+
+      if (!empty($this->configuration['debug_mode'])) {
+        $this->logger->debug('Creating BTCPay invoice for order @order, amount @amount @currency.', [
+          '@order' => $order->id(),
+          '@amount' => $amount->getNumber(),
+          '@currency' => $amount->getCurrencyCode(),
+        ]);
       }
 
-      // Log the invoice creation attempt.
-      $this->logger->info('Creating BTCPay invoice - Store: @store, Amount: @amount @currency, Order: @order, Email: @email', [
-        '@store' => $store_id,
-        '@amount' => $amount->getNumber(),
-        '@currency' => $amount->getCurrencyCode(),
-        '@order' => $order->id(),
-        '@email' => $order->getEmail() ?: 'none',
-      ]);
-
-      // Create the invoice.
-      // Note: orderId and buyerEmail are passed as parameters, not in metadata.
-      $invoice = $client->createInvoice(
-        $store_id,
+      return $client->createInvoice(
+        $this->configuration['store_id'],
         $amount->getCurrencyCode(),
         PreciseNumber::parseString($amount->getNumber()),
-        $order->id(),
-        $order->getEmail(),
-        $metadata,
-        $checkoutOptions
+        (string) $order->id(),
+        $email,
+        NULL,
+        $checkout_options,
       );
-
-      $this->logger->info('BTCPay invoice created successfully: @invoice_id', [
-        '@invoice_id' => $invoice->getData()['id'] ?? 'unknown',
-      ]);
-
-      return $invoice;
     }
-    catch (\Exception $e) {
-      $this->logger->error('Error creating BTCPay invoice: @error | Type: @type | Trace: @trace', [
-        '@error' => $e->getMessage(),
+    catch (\Throwable $e) {
+      $this->logger->error('Could not create a BTCPay invoice (@type).', [
         '@type' => get_class($e),
-        '@trace' => $e->getTraceAsString(),
       ]);
-      throw new PaymentGatewayException('Could not create invoice on BTCPay Server: ' . $e->getMessage());
+      throw PaymentGatewayException::createForPayment($payment, 'Could not create an invoice on BTCPay Server.', 0, $e);
     }
   }
 
@@ -472,11 +459,13 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
     }
 
     try {
-      $store_id = $this->configuration['store_id'];
-      return $client->getInvoice($store_id, $invoiceId);
+      return $client->getInvoice($this->configuration['store_id'], $invoiceId);
     }
-    catch (\Exception $e) {
-      $this->logger->error('Error getting BTCPay invoice: @error', ['@error' => $e->getMessage()]);
+    catch (\Throwable $e) {
+      $this->logger->error('Could not retrieve BTCPay invoice @invoice (@type).', [
+        '@invoice' => $invoiceId,
+        '@type' => get_class($e),
+      ]);
       return NULL;
     }
   }
@@ -485,458 +474,367 @@ class BtcPayRedirect extends OffsitePaymentGatewayBase implements BtcPayInterfac
    * {@inheritdoc}
    */
   public function onReturn(OrderInterface $order, Request $request) {
-    // Get invoice ID from order data.
     $order_data = $order->getData('btcpay');
-    if (empty($order_data['invoice_id'])) {
+    $invoice_id = is_array($order_data) ? ($order_data['invoice_id'] ?? NULL) : NULL;
+    if (!is_string($invoice_id) || $invoice_id === '') {
       throw new PaymentGatewayException('Invoice ID missing for this BTCPay transaction.');
     }
 
-    $invoice_id = $order_data['invoice_id'];
-    
-    // Fetch the CURRENT invoice status from BTCPay Server.
-    // This is critical - we don't trust the return URL, we verify the actual status.
-    $this->logger->info('Verifying invoice status from BTCPay Server for invoice: @invoice_id', [
-      '@invoice_id' => $invoice_id,
-    ]);
-    
-    $invoice = $this->getInvoice($invoice_id);
-    if (!$invoice) {
-      throw new PaymentGatewayException('Could not retrieve invoice from BTCPay Server.');
+    $gateway_id = $this->getGatewayId();
+    if (!$gateway_id) {
+      throw new PaymentGatewayException('Payment gateway ID missing for this BTCPay transaction.');
+    }
+    $lock_name = $this->getInvoiceLockName($gateway_id, $invoice_id);
+    if (!$this->lock->acquire($lock_name, 30.0)) {
+      throw new PaymentGatewayException('The BTCPay transaction is already being processed. Try again.');
     }
 
-    $invoice_data = $invoice->getData();
-    $this->logger->info('Invoice @invoice_id status verified: @status', [
-      '@invoice_id' => $invoice_id,
-      '@status' => $invoice_data['status'],
-    ]);
+    try {
+      $payment = $this->loadPaymentForInvoice($invoice_id);
+      if (!$payment) {
+        throw new PaymentGatewayException('No unique local payment is bound to this BTCPay invoice.');
+      }
+      $invoice = $this->getInvoice($invoice_id);
+      if (!$invoice) {
+        throw PaymentGatewayException::createForPayment($payment, 'Could not retrieve the BTCPay invoice.');
+      }
 
-    // Process the payment based on the VERIFIED invoice status.
-    $this->processInvoice($order, $invoice);
+      try {
+        $this->assertInvoiceBinding($payment, $invoice, $order);
+      }
+      catch (\Throwable $e) {
+        $this->logger->error('Rejected BTCPay return for invoice @invoice: @error', [
+          '@invoice' => $invoice_id,
+          '@error' => $e->getMessage(),
+        ]);
+        throw PaymentGatewayException::createForPayment($payment, 'The BTCPay invoice did not match the local payment.', 0, $e);
+      }
 
-    // Check if payment failed and redirect to previous step.
-    if (in_array($invoice_data['status'], ['Expired', 'Invalid'])) {
-      $this->logger->warning('Payment failed for order @order_id, invoice status: @status', [
-        '@order_id' => $order->id(),
-        '@status' => $invoice_data['status'],
-      ]);
-      $this->redirectOnPaymentError($order);
+      $invoice_data = $invoice->getData();
+      $target_state = InvoiceStatus::paymentState($invoice_data);
+      $this->applyAuthoritativeState($payment, $invoice_data, $target_state);
+      if (!InvoiceStatus::isCheckoutComplete($invoice_data)) {
+        throw PaymentGatewayException::createForPayment($payment, 'The BTCPay invoice is not fully settled.');
+      }
     }
-  }
-
-  /**
-   * {@inheritdoc}
-   */
-  public function onCancel(OrderInterface $order, Request $request) {
-    $this->messenger()->addMessage(
-      $this->t('Payment was cancelled. You may resume the checkout process when ready.')
-    );
+    finally {
+      $this->lock->release($lock_name);
+    }
   }
 
   /**
    * {@inheritdoc}
    */
   public function onNotify(Request $request) {
-    // Get the webhook payload.
     $payload = $request->getContent();
-    $data = json_decode($payload, TRUE);
-    
-    // Log incoming webhook (only in debug mode)
-    if ($this->configuration['debug_mode'] ?? FALSE) {
-      $this->logger->info('BTCPay webhook received. Event type: @type', [
-        '@type' => $data['type'] ?? 'unknown',
-      ]);
-    }
-    
-    // Validate webhook signature FIRST (before any other processing)
-    // Note: Header names may vary in case (BTCPay-Sig vs btcpay-sig)
-    $signature = $this->getWebhookSignature($request);
-    
-    if (!$this->validWebhookRequest($signature, $payload)) {
-      $this->logger->error('BTCPay webhook: Failed to validate signature.');
-      throw new PaymentGatewayException('Invalid webhook signature.');
-    }
-    
-    // Validate payload structure
-    if (empty($data['invoiceId'])) {
-      $this->logger->error('BTCPay webhook: Invoice ID missing from payload.');
-      return;
-    }
-    
-    if ($this->configuration['debug_mode'] ?? FALSE) {
-      $this->logger->info('Processing webhook for invoice: @invoice_id, event: @event', [
-        '@invoice_id' => $data['invoiceId'],
-        '@event' => $data['type'] ?? 'unknown',
-      ]);
-    }
-
-    // Fetch fresh invoice data from BTCPay Server (don't trust webhook payload alone)
-    $invoice = $this->getInvoice($data['invoiceId']);
-    if (!$invoice) {
-      $this->logger->error('BTCPay webhook: Could not retrieve invoice from BTCPay Server. Invoice ID: @invoice_id', [
-        '@invoice_id' => $data['invoiceId'],
-      ]);
-      return;
-    }
-
-    // Get invoice data
-    $invoice_data = $invoice->getData();
-    if ($this->configuration['debug_mode'] ?? FALSE) {
-      $this->logger->debug('BTCPay invoice status: @status, additional status: @additional', [
-        '@status' => $invoice_data['status'] ?? 'unknown',
-        '@additional' => $invoice_data['additionalStatus'] ?? 'none',
-      ]);
-    }
-
-    // Get order ID from invoice metadata.
-    if (empty($invoice_data['metadata']['orderId'])) {
-      $this->logger->error('BTCPay webhook: Order ID missing from invoice metadata.');
-      return;
-    }
-    
-    $order_id = $invoice_data['metadata']['orderId'];
-
-    // Load the order.
-    $order_storage = \Drupal::entityTypeManager()->getStorage('commerce_order');
-    $order = $order_storage->load($order_id);
-    if (!$order) {
-      $this->logger->error('BTCPay webhook: Order @order_id not found.', ['@order_id' => $order_id]);
-      return;
-    }
-
-    // Process the invoice based on webhook event type
-    $this->processWebhookEvent($order, $invoice, $data);
-  }
-
-  /**
-   * Process webhook event and update order/payment accordingly.
-   *
-   * @param \Drupal\commerce_order\Entity\OrderInterface $order
-   *   The order.
-   * @param \BTCPayServer\Result\Invoice $invoice
-   *   The BTCPay invoice.
-   * @param array $webhook_data
-   *   The webhook payload data.
-   */
-  protected function processWebhookEvent(OrderInterface $order, InvoiceResult $invoice, array $webhook_data) {
-    $invoice_data = $invoice->getData();
-    $event_type = $webhook_data['type'] ?? 'unknown';
-    $invoice_status = $invoice_data['status'] ?? 'Unknown';
-    $additional_status = $invoice_data['additionalStatus'] ?? '';
-    
-    if ($this->configuration['debug_mode'] ?? FALSE) {
-      $this->logger->info('Processing webhook event @event for order @order_id, invoice status: @status', [
-        '@event' => $event_type,
-        '@order_id' => $order->id(),
-        '@status' => $invoice_status,
-      ]);
-    }
-    
-    // Determine payment state based on event type and invoice status
-    $payment_state = NULL;
-    $order_message = 'Event: ' . $event_type . ': ';
-    
-    switch ($event_type) {
-      case 'InvoiceReceivedPayment':
-        $payment_state = 'authorization';
-        $order_message .= 'Received (partial) payment but waiting for settlement.';
-        break;
-        
-      case 'InvoicePaymentSettled':
-        // Only settled if the full invoice is paid
-        if ($invoice_status === 'Expired' && $invoice->isPaidLate()) {
-          $payment_state = 'completed';
-          $order_message = 'Already expired invoice now fully paid and settled.';
-        } else {
-          $payment_state = 'authorization';
-          $order_message .= '(Partial) payment now settled.';
-        }
-        break;
-        
-      case 'InvoiceProcessing':
-        $payment_state = 'authorization';
-        $order_message .= 'Received full payment but waiting for settlement.';
-        break;
-        
-      case 'InvoiceSettled':
-        $payment_state = 'completed';
-        if ($additional_status === 'PaidOver') {
-          $order_message = 'Overpaid and settled. Please check transaction for refund amount.';
-        } else {
-          $order_message = 'Fully paid and settled.';
-        }
-        break;
-        
-      case 'InvoiceExpired':
-        $payment_state = 'authorization_expired';
-        if (!empty($webhook_data['partiallyPaid'])) {
-          $order_message .= 'Invoice expired but received partial payment. Please check transaction details.';
-        } else {
-          $order_message .= 'Invoice expired without payment.';
-        }
-        break;
-        
-      case 'InvoiceInvalid':
-        $payment_state = 'authorization_voided';
-        $order_message .= 'Invoice marked as invalid.';
-        break;
-        
-      default:
-        $this->logger->warning('Unhandled webhook event type: @type', ['@type' => $event_type]);
-        return;
-    }
-    
-    if ($payment_state) {
-      // Update or create payment
-      $this->updatePayment($order, $invoice, $payment_state);
-      
-      // Log the status update (always log successful updates)
-      $this->logger->notice('Payment status updated for order @order_id: @message', [
-        '@order_id' => $order->id(),
-        '@message' => $order_message,
-      ]);
-    }
-  }
-
-  /**
-   * Process an invoice and create/update payment.
-   *
-   * @param \Drupal\commerce_order\Entity\OrderInterface $order
-   *   The order.
-   * @param \BTCPayServer\Result\Invoice $invoice
-   *   The BTCPay invoice.
-   *
-   * @return \Drupal\commerce_payment\Entity\PaymentInterface|null
-   *   The payment entity or NULL.
-   */
-  protected function processInvoice(OrderInterface $order, InvoiceResult $invoice) {
-    $payment_storage = \Drupal::entityTypeManager()->getStorage('commerce_payment');
-    $invoice_id = $invoice->getData()['id'];
-    $status = $invoice->getData()['status'];
-
-    // Debug logging.
-    \Drupal::logger('commerce_btcpay')->debug('processInvoice called for order @order_id, invoice @invoice_id, status @status', [
-      '@order_id' => $order->id(),
-      '@invoice_id' => $invoice_id,
-      '@status' => $status,
-    ]);
-
-    // Check if payment already exists.
-    $payments = $payment_storage->loadByProperties([
-      'order_id' => $order->id(),
-      'remote_id' => $invoice_id,
-    ]);
-    $payment = reset($payments);
-
-    // Map BTCPay status to Commerce payment state.
-    $payment_state = $this->mapInvoiceStatus($status);
-
-    if ($payment) {
-      // Update existing payment.
-      $payment->setState($payment_state);
-      $payment->setRemoteState($status);
-      $payment->save();
-      \Drupal::logger('commerce_btcpay')->debug('Updated existing payment @payment_id', ['@payment_id' => $payment->id()]);
-    }
-    else {
-      // Create new payment.
-      // Get the payment gateway entity ID from the parent entity.
-      $payment_gateway_id = $this->parentEntity ? $this->parentEntity->id() : NULL;
-      
-      \Drupal::logger('commerce_btcpay')->debug('Creating new payment with gateway @gateway_id', ['@gateway_id' => $this->safeLogValue($payment_gateway_id)]);
-      
-      $payment = $payment_storage->create([
-        'state' => $payment_state,
-        'amount' => $order->getTotalPrice(),
-        'payment_gateway' => $payment_gateway_id,
-        'order_id' => $order->id(),
-        'remote_id' => $invoice_id,
-        'remote_state' => $status,
-      ]);
-      $payment->save();
-      \Drupal::logger('commerce_btcpay')->debug('Created new payment @payment_id', ['@payment_id' => $payment->id()]);
-    }
-
-    return $payment;
-  }
-
-  /**
-   * Update or create payment for an order.
-   *
-   * @param \Drupal\commerce_order\Entity\OrderInterface $order
-   *   The order.
-   * @param \BTCPayServer\Result\Invoice $invoice
-   *   The BTCPay invoice.
-   * @param string $payment_state
-   *   The payment state to set.
-   *
-   * @return \Drupal\commerce_payment\Entity\PaymentInterface|null
-   *   The payment entity or NULL.
-   */
-  protected function updatePayment(OrderInterface $order, InvoiceResult $invoice, string $payment_state) {
-    $payment_storage = \Drupal::entityTypeManager()->getStorage('commerce_payment');
-    $invoice_data = $invoice->getData();
-    $invoice_id = $invoice_data['id'];
-    $status = $invoice_data['status'];
-
-    // Check if payment already exists
-    $payments = $payment_storage->loadByProperties([
-      'order_id' => $order->id(),
-      'remote_id' => $invoice_id,
-    ]);
-    $payment = reset($payments);
-
-    if ($payment) {
-      // Update existing payment
-      $payment->setState($payment_state);
-      $payment->setRemoteState($status);
-      $payment->save();
-      if ($this->configuration['debug_mode'] ?? FALSE) {
-        $this->logger->debug('Updated existing payment @payment_id to state @state', [
-          '@payment_id' => $payment->id(),
-          '@state' => $payment_state,
-        ]);
-      }
-    }
-    else {
-      // Create new payment
-      $payment_gateway_id = $this->parentEntity ? $this->parentEntity->id() : NULL;
-      
-      $payment = $payment_storage->create([
-        'state' => $payment_state,
-        'amount' => $order->getTotalPrice(),
-        'payment_gateway' => $payment_gateway_id,
-        'order_id' => $order->id(),
-        'remote_id' => $invoice_id,
-        'remote_state' => $status,
-      ]);
-      $payment->save();
-      if ($this->configuration['debug_mode'] ?? FALSE) {
-        $this->logger->debug('Created new payment @payment_id with state @state', [
-          '@payment_id' => $payment->id(),
-          '@state' => $payment_state,
-        ]);
-      }
-    }
-
-    return $payment;
-  }
-
-  /**
-   * Safely convert a value to string for logging.
-   *
-   * @param mixed $value
-   *   The value to convert.
-   *
-   * @return string
-   *   The string representation.
-   */
-  protected function safeLogValue($value): string {
-    if ($value === NULL) {
-      return 'NULL';
-    }
-    if (is_bool($value)) {
-      return $value ? 'TRUE' : 'FALSE';
-    }
-    if (is_array($value) || is_object($value)) {
-      return print_r($value, TRUE);
-    }
-    return (string) $value;
-  }
-
-  /**
-   * Map BTCPay invoice status to Commerce payment state.
-   *
-   * @param string $status
-   *   The BTCPay invoice status.
-   *
-   * @return string
-   *   The Commerce payment state.
-   */
-  protected function mapInvoiceStatus(string $status): string {
-    $status_map = [
-      'New' => 'new',
-      'Processing' => 'authorization',
-      'Settled' => 'completed',
-      'Expired' => 'authorization_expired',
-      'Invalid' => 'authorization_voided',
-    ];
-
-    return $status_map[$status] ?? 'new';
-  }
-
-  /**
-   * Get webhook signature from request headers.
-   * 
-   * Note: Header names may be case-insensitive depending on the server.
-   *
-   * @param \Symfony\Component\HttpFoundation\Request $request
-   *   The request object.
-   *
-   * @return string|null
-   *   The signature or NULL if not found.
-   */
-  protected function getWebhookSignature(Request $request): ?string {
-    // Try different case variations of the header name
     $signature = $request->headers->get('BTCPay-Sig');
-    if (!$signature) {
-      $signature = $request->headers->get('btcpay-sig');
+    if (!$this->validWebhookRequest($signature, $payload)) {
+      $this->logger->warning('Rejected a BTCPay webhook with an invalid signature.');
+      return new Response('', 403);
     }
-    if (!$signature) {
-      $signature = $request->headers->get('Btcpay-Sig');
+
+    try {
+      $data = json_decode($payload, TRUE, 32, JSON_THROW_ON_ERROR);
+      $event = $this->validateWebhookPayload($data);
     }
-    return $signature;
+    catch (\Throwable $e) {
+      $this->logger->warning('Rejected a malformed BTCPay webhook: @error', ['@error' => $e->getMessage()]);
+      return new Response('', 400);
+    }
+
+    if (!hash_equals((string) $this->configuration['store_id'], $event['store_id'])
+      || empty($this->configuration['webhook_id'])
+      || !hash_equals((string) $this->configuration['webhook_id'], $event['webhook_id'])) {
+      $this->logger->warning('Rejected a BTCPay webhook for an unexpected store or webhook.');
+      return new Response('', 403);
+    }
+
+    $gateway_id = $this->getGatewayId();
+    if (!$gateway_id) {
+      return new Response('', 500);
+    }
+    $lock_name = $this->getInvoiceLockName($gateway_id, $event['invoice_id']);
+    if (!$this->lock->acquire($lock_name, 30.0)) {
+      return new Response('', 503, ['Retry-After' => '2']);
+    }
+
+    try {
+      if ($this->webhookEventStorage->isProcessed($gateway_id, $event['delivery_id'], $event['original_delivery_id'])) {
+        return new Response('', 200);
+      }
+
+      // Always fetch current authoritative state. Event type never determines
+      // the resulting payment state.
+      $invoice = $this->getInvoice($event['invoice_id']);
+      if (!$invoice) {
+        return new Response('', 503, ['Retry-After' => '5']);
+      }
+      $payment = $this->loadPaymentForInvoice($event['invoice_id']);
+      if (!$payment) {
+        $this->logger->warning('BTCPay webhook invoice @invoice has no unique pre-existing payment.', [
+          '@invoice' => $event['invoice_id'],
+        ]);
+        return new Response('', 409);
+      }
+
+      try {
+        $this->assertInvoiceBinding($payment, $invoice);
+      }
+      catch (\Throwable $e) {
+        $this->logger->error('Rejected mismatched BTCPay webhook invoice @invoice: @error', [
+          '@invoice' => $event['invoice_id'],
+          '@error' => $e->getMessage(),
+        ]);
+        return new Response('', 400);
+      }
+
+      $last_timestamp = $this->webhookEventStorage->getLastTimestamp($gateway_id, $event['invoice_id']);
+      if ($event['timestamp'] >= $last_timestamp) {
+        $invoice_data = $invoice->getData();
+        $this->applyAuthoritativeState($payment, $invoice_data, InvoiceStatus::paymentState($invoice_data));
+      }
+      $this->webhookEventStorage->markProcessed(
+        $gateway_id,
+        $event['invoice_id'],
+        $event['delivery_id'],
+        $event['original_delivery_id'],
+        $event['timestamp'],
+      );
+      return new Response('', 200);
+    }
+    catch (\Throwable $e) {
+      $this->logger->error('Failed to process a verified BTCPay webhook (@type).', [
+        '@type' => get_class($e),
+      ]);
+      return new Response('', 500);
+    }
+    finally {
+      $this->lock->release($lock_name);
+    }
   }
 
   /**
-   * Validate webhook request signature.
-   *
-   * @param string|null $signature
-   *   The signature from the header.
-   * @param string $payload
-   *   The raw webhook payload.
-   *
-   * @return bool
-   *   TRUE if valid, FALSE otherwise.
+   * Loads the one existing local payment bound to a remote invoice ID.
+   */
+  protected function loadPaymentForInvoice(string $invoice_id): ?PaymentInterface {
+    $storage = $this->entityTypeManager->getStorage('commerce_payment');
+    $query = $storage->getQuery();
+    // PHPStan Drupal misclassifies the literal FALSE as always truthy here.
+    // @phpstan-ignore-next-line
+    $query->accessCheck(FALSE);
+    $payment_ids = $query
+      ->condition('remote_id', $invoice_id)
+      ->execute();
+    if (count($payment_ids) !== 1) {
+      return NULL;
+    }
+    $storage->resetCache($payment_ids);
+    $payment = $storage->load(reset($payment_ids));
+    return $payment instanceof PaymentInterface ? $payment : NULL;
+  }
+
+  /**
+   * Builds the shared lock name for every invoice state update path.
+   */
+  protected function getInvoiceLockName(string $gateway_id, string $invoice_id): string {
+    return 'commerce_btcpay.invoice.' . hash('sha256', $gateway_id . "\0" . $invoice_id);
+  }
+
+  /**
+   * Requires an exact invoice/payment/order/gateway/amount/currency binding.
+   */
+  protected function assertInvoiceBinding(
+    PaymentInterface $payment,
+    InvoiceResult $invoice,
+    ?OrderInterface $expected_order = NULL,
+  ): void {
+    $invoice_data = $invoice->getData();
+    $invoice_id = $invoice_data['id'] ?? NULL;
+    if (!is_string($invoice_id) || !hash_equals((string) $payment->getRemoteId(), $invoice_id)) {
+      throw new \UnexpectedValueException('Remote invoice ID mismatch.');
+    }
+    if ($payment->getPaymentGatewayId() !== $this->getGatewayId()) {
+      throw new \UnexpectedValueException('Payment gateway mismatch.');
+    }
+
+    $order = $payment->getOrder();
+    if (!$order || ($expected_order && $order->id() !== $expected_order->id())) {
+      throw new \UnexpectedValueException('Payment order mismatch.');
+    }
+    $metadata_order_id = $invoice_data['metadata']['orderId'] ?? NULL;
+    if (!is_scalar($metadata_order_id) || !hash_equals((string) $order->id(), (string) $metadata_order_id)) {
+      throw new \UnexpectedValueException('Invoice metadata order mismatch.');
+    }
+    $invoice_store_id = $invoice_data['storeId'] ?? NULL;
+    if (!is_string($invoice_store_id)
+      || $invoice_store_id === ''
+      || !hash_equals((string) $this->configuration['store_id'], $invoice_store_id)) {
+      throw new \UnexpectedValueException('Invoice store mismatch.');
+    }
+
+    $payment_amount = $payment->getAmount();
+    if (!$payment_amount) {
+      throw new \UnexpectedValueException('Payment amount is missing.');
+    }
+    $invoice_number = $invoice->getAmount()->__toString();
+    $invoice_currency = strtoupper($invoice->getCurrency());
+    if (!hash_equals($payment_amount->getCurrencyCode(), $invoice_currency)
+      || !$this->decimalAmountsEqual($payment_amount->getNumber(), $invoice_number)) {
+      throw new \UnexpectedValueException('Invoice amount or currency mismatch.');
+    }
+  }
+
+  /**
+   * Compares decimal amount strings without losing sub-unit precision.
+   */
+  protected function decimalAmountsEqual(string $first, string $second): bool {
+    $first_scale = str_contains($first, '.') ? strlen(substr(strrchr($first, '.'), 1)) : 0;
+    $second_scale = str_contains($second, '.') ? strlen(substr(strrchr($second, '.'), 1)) : 0;
+    return bccomp($first, $second, max($first_scale, $second_scale)) === 0;
+  }
+
+  /**
+   * Applies authoritative state without allowing terminal-state regressions.
+   */
+  protected function applyAuthoritativeState(PaymentInterface $payment, array $invoice_data, ?string $target_state): void {
+    $current_state = $payment->getState()->getId();
+    if ($target_state !== NULL && InvoiceStatus::canTransition($current_state, $target_state)) {
+      $payment->setState($target_state);
+    }
+    elseif ($target_state !== NULL && $target_state !== $current_state && !empty($this->configuration['debug_mode'])) {
+      $this->logger->debug('Ignored non-monotonic BTCPay payment transition from @from to @to.', [
+        '@from' => $current_state,
+        '@to' => $target_state,
+      ]);
+    }
+
+    $remote_state = (string) ($invoice_data['status'] ?? 'Unknown');
+    $additional_status = (string) ($invoice_data['additionalStatus'] ?? '');
+    if ($additional_status !== '' && $additional_status !== 'None') {
+      $remote_state .= ':' . $additional_status;
+    }
+    $payment->setRemoteState($remote_state);
+    $payment->save();
+  }
+
+  /**
+   * Validates and normalizes required webhook envelope data.
+   */
+  protected function validateWebhookPayload(mixed $data): array {
+    if (!is_array($data)) {
+      throw new \UnexpectedValueException('Webhook JSON must be an object.');
+    }
+    $required_strings = [
+      'deliveryId' => 'delivery_id',
+      'webhookId' => 'webhook_id',
+      'storeId' => 'store_id',
+      'invoiceId' => 'invoice_id',
+      'type' => 'type',
+    ];
+    $event = [];
+    foreach ($required_strings as $input_key => $output_key) {
+      if (!is_string($data[$input_key] ?? NULL) || $data[$input_key] === '' || strlen($data[$input_key]) > 255) {
+        throw new \UnexpectedValueException(sprintf('Invalid webhook field: %s', $input_key));
+      }
+      $event[$output_key] = $data[$input_key];
+    }
+    if (!in_array($event['type'], [
+      'InvoiceReceivedPayment',
+      'InvoicePaymentSettled',
+      'InvoiceProcessing',
+      'InvoiceExpired',
+      'InvoiceSettled',
+      'InvoiceInvalid',
+    ], TRUE)) {
+      throw new \UnexpectedValueException('Unexpected webhook event type.');
+    }
+
+    $original_id = $data['originalDeliveryId'] ?? $data['orignalDeliveryId'] ?? NULL;
+    if (!is_string($original_id) || $original_id === '' || strlen($original_id) > 255) {
+      if (!empty($data['isRedelivery'])) {
+        throw new \UnexpectedValueException('A redelivery requires its original delivery ID.');
+      }
+      $original_id = $event['delivery_id'];
+    }
+    $event['original_delivery_id'] = $original_id;
+
+    if (!is_int($data['timestamp'] ?? NULL) || $data['timestamp'] <= 0) {
+      throw new \UnexpectedValueException('Invalid webhook timestamp.');
+    }
+    $event['timestamp'] = $data['timestamp'];
+    return $event;
+  }
+
+  /**
+   * Validates an incoming webhook signature over the unmodified body.
    */
   protected function validWebhookRequest(?string $signature, string $payload): bool {
-    if (empty($signature) || empty($this->configuration['webhook_secret'])) {
-      $this->logger->warning('Webhook validation failed: missing signature or secret.');
-      return FALSE;
-    }
-
-    // Use BTCPay SDK's validation method
     try {
-      return Webhook::isIncomingWebhookRequestValid(
-        $payload,
-        $signature,
-        $this->configuration['webhook_secret']
-      );
+      $secret = $this->getWebhookSecret();
+      if (!$signature || $secret === '') {
+        return FALSE;
+      }
+      return Webhook::isIncomingWebhookRequestValid($payload, $signature, $secret);
     }
-    catch (\Exception $e) {
-      $this->logger->error('Webhook validation error: @error', ['@error' => $e->getMessage()]);
+    catch (\Throwable) {
       return FALSE;
     }
   }
 
   /**
-   * Redirect to previous checkout step on payment error.
-   *
-   * @param \Drupal\commerce_order\Entity\OrderInterface $order
-   *   The order.
+   * Gets the current gateway ID in runtime or configuration-form contexts.
    */
-  protected function redirectOnPaymentError(OrderInterface $order) {
-    $this->messenger()->addError(
-      $this->t('The payment could not be completed due to an expired or invalid invoice. Please try again or change payment option in the previous step.')
-    );
-
-    /** @var \Drupal\commerce_checkout\Entity\CheckoutFlowInterface $checkout_flow */
-    $checkout_flow = $order->get('checkout_flow')->entity;
-    if ($checkout_flow) {
-      $checkout_flow_plugin = $checkout_flow->getPlugin();
-      $step_id = $this->checkoutOrderManager->getCheckoutStepId($order);
-      $previous_step_id = $checkout_flow_plugin->getPreviousStepId($step_id);
-      $checkout_flow_plugin->redirectToStep($previous_step_id);
+  protected function getGatewayId(): ?string {
+    if ($this->activeGatewayId !== NULL) {
+      return $this->activeGatewayId;
     }
+    if ($this->parentEntity->id()) {
+      return (string) $this->parentEntity->id();
+    }
+    return NULL;
+  }
+
+  /**
+   * Gets the API key, migrating a legacy configuration value when necessary.
+   */
+  protected function getApiKey(): string {
+    $gateway_id = $this->getGatewayId();
+    if ($gateway_id) {
+      $stored = $this->credentialStorage->get($gateway_id)['api_key'] ?? '';
+      if (is_string($stored) && $stored !== '') {
+        return $stored;
+      }
+      if (!empty($this->configuration['api_key']) && is_string($this->configuration['api_key'])) {
+        $this->credentialStorage->set($gateway_id, ['api_key' => $this->configuration['api_key']]);
+        return $this->configuration['api_key'];
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Determines whether the current gateway has a usable API key.
+   */
+  protected function hasApiKey(): bool {
+    return $this->getApiKey() !== '';
+  }
+
+  /**
+   * Gets the webhook secret, migrating legacy configuration when necessary.
+   */
+  protected function getWebhookSecret(): string {
+    $gateway_id = $this->getGatewayId();
+    if ($gateway_id) {
+      $stored = $this->credentialStorage->get($gateway_id)['webhook_secret'] ?? '';
+      if (is_string($stored) && $stored !== '') {
+        return $stored;
+      }
+      if (!empty($this->configuration['webhook_secret']) && is_string($this->configuration['webhook_secret'])) {
+        $this->credentialStorage->set($gateway_id, ['webhook_secret' => $this->configuration['webhook_secret']]);
+        return $this->configuration['webhook_secret'];
+      }
+    }
+    return '';
   }
 
 }
